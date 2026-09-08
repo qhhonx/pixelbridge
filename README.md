@@ -1,12 +1,12 @@
 # PixelBridge
 
-[中文](README.zh-Hans.md) · [Download](https://github.com/qhhonx/pixelbridge/releases) · [Website](https://pixelbridge-app-beta.vercel.app)
+[中文](README.zh-Hans.md) · [Download](https://github.com/qhhonx/pixelbridge/releases) · [Website](https://pixelbridge-app.vercel.app)
 
 A native macOS app that sends Apple Photos originals to a Google Pixel for a second backup in Google Photos.
 
-**Beta validation phase. Apple Silicon, macOS 14 or later.**
+**Public beta. Apple Silicon, macOS 14 or later.**
 
-The source repository is currently private. The public website previews the product; public downloads and source access will open after validation. Maintainers can use the local build instructions and private CI artifacts.
+Source code is available under the MIT license. Download the latest published beta from Releases, or build it locally using the instructions below.
 The app uses an ad hoc integrity signature and is **not notarized by Apple**.
 
 ## What it does

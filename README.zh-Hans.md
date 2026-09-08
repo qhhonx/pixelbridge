@@ -1,12 +1,12 @@
 # PixelBridge
 
-[English](README.md) · [下载](https://github.com/qhhonx/pixelbridge/releases) · [官网](https://pixelbridge-app-beta.vercel.app)
+[English](README.md) · [下载](https://github.com/qhhonx/pixelbridge/releases) · [官网](https://pixelbridge-app.vercel.app)
 
 通过 Mac 将 Apple 照片原件传到 Google Pixel，再由 Google Photos 完成第二份备份。
 
 **Beta 验证阶段。需要 Apple Silicon Mac、macOS 14 或更高版本。**
 
-源代码仓库目前保持私有，官网对外展示产品。确认验证通过后再开放源码和下载；维护者可使用本地构建或私有 CI 产物。 安装包使用临时签名，**未经 Apple 公证**。
+源码已按 MIT 协议开放。可从 Releases 下载最新发布的测试版，或按照下方说明自行构建。 安装包使用临时签名，**未经 Apple 公证**。
 
 ## 解决什么问题
 

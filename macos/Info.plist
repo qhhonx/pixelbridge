@@ -42,7 +42,7 @@
 	<key>SUEnableSystemProfiling</key>
 	<false/>
 	<key>SUFeedURL</key>
-	<string>https://pixelbridge-app-beta.vercel.app/appcast.xml</string>
+	<string>https://pixelbridge-app.vercel.app/appcast.xml</string>
 	<key>SUPublicEDKey</key>
 	<string>vevbVbwDMMYHFLTj7vRc6tPdDk4fMWpVZSErlBnsUG0=</string>
 	<key>SUVerifyUpdateBeforeExtraction</key>
