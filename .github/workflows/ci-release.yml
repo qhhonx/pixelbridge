@@ -1,0 +1,103 @@
+name: Check, build and release
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pixelbridge-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  website:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: site/package-lock.json
+      - run: npm ci
+        working-directory: site
+      - run: npm test && npm run build
+        working-directory: site
+      - run: python3 scripts/audit-public.py
+  app:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup show
+      - run: cargo test --locked
+      - run: ./scripts/test-macos.sh
+      - run: ./scripts/build-macos-app.sh
+      - run: python3 tests/transport_scenarios.py
+      - run: ./scripts/package-release.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pixelbridge-macos
+          path: dist/release/
+          retention-days: 14
+          if-no-files-found: error
+  release:
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    needs: [website, app]
+    concurrency:
+      group: pixelbridge-release
+      cancel-in-progress: false
+    runs-on: macos-15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Determine whether this version is already published
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/check-version.py
+          tag="v$(cat VERSION)"
+          # A successful list distinguishes an absent release from authentication/network errors.
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
+          python3 - "$tag" "$RUNNER_TEMP/releases.json" >> "$GITHUB_OUTPUT" <<'PY'
+          import json,sys
+          existing=[r for r in json.load(open(sys.argv[2])) if r['tag_name']==sys.argv[1]]
+          print('publish='+('true' if not existing or existing[0]['draft'] else 'false'))
+          PY
+      - if: steps.version.outputs.publish == 'true'
+        run: python3 scripts/check-release-order.py "$RUNNER_TEMP/releases.json"
+      - uses: actions/download-artifact@v4
+        if: steps.version.outputs.publish == 'true'
+        with:
+          name: pixelbridge-macos
+          path: dist/release
+      - if: steps.version.outputs.publish == 'true'
+        run: ./scripts/fetch-dependencies.sh
+      - name: Sign update and validate release
+        if: steps.version.outputs.publish == 'true'
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          test -n "$SPARKLE_PRIVATE_KEY"
+          export SPARKLE_KEY_FILE="$RUNNER_TEMP/sparkle-key"
+          trap 'rm -f "$SPARKLE_KEY_FILE"' EXIT
+          umask 077
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$SPARKLE_KEY_FILE"
+          ./scripts/sign-release.sh
+      - name: Publish complete beta or stable release
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v$(cat VERSION)"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --target "$GITHUB_SHA" --draft --title "PixelBridge $tag" --notes-file docs/RELEASE-NOTES.md
+          fi
+          gh release upload "$tag" dist/release/*.zip dist/release/SHA256SUMS dist/release/appcast.xml --clobber
+          case "$tag" in
+            *-beta.*) gh release edit "$tag" --draft=false --prerelease ;;
+            *) gh release edit "$tag" --draft=false --latest ;;
+          esac

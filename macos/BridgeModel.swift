@@ -1,0 +1,576 @@
+import AppKit
+import Photos
+import SwiftUI
+import ServiceManagement
+
+@MainActor
+final class BridgeModel: ObservableObject {
+    @Published var rows: [QueueRow] = [] {
+        didSet { phases = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0.phase) }) }
+    }
+    @Published private(set) var phases: [String: String] = [:]
+    @Published private(set) var pendingRetryIDs: Set<String> = []
+    @Published private(set) var pausing = false
+    @Published private(set) var galleryRevision = 0
+    @Published private(set) var lastLibraryRefresh: Date?
+    @Published var library: [LibraryItem] = []
+    @Published var gallery: [String: [LibraryItem]] = [:]
+    @Published var totalAssets = 0
+    @Published var libraryCounts = Message.empty
+    @Published var devices: [DeviceInfo] = []
+    @Published var adbPath = ""
+    @Published var deviceMessage = Message(.device_setup_prompt)
+    @Published var deviceMetrics = Message.empty
+    @Published var status = Message(.status_ready)
+    @Published var detail = Message(.backup_description)
+    @Published var busy = false
+    @Published var scanning = false
+    @Published var installing = false
+    @Published var currentName = ""
+    @Published var currentItem: LibraryItem?
+    @Published var completed = 0
+    @Published var batchTotal = 0
+    @Published var cacheBytes: Int64 = 0
+    @Published var logs: [String] = []
+    @Published var authorized = false
+    @Published var autoRunning = UserDefaults.standard.bool(forKey: "automatic")
+    @Published var nextRun: Date?
+    @Published var selectedDevice = UserDefaults.standard.string(forKey: "pixelSerial") ?? "" {
+        didSet { UserDefaults.standard.set(selectedDevice, forKey: "pixelSerial") }
+    }
+    @Published var batchLimit = max(1, UserDefaults.standard.integer(forKey: "batchLimit") == 0 ? 10 : UserDefaults.standard.integer(forKey: "batchLimit")) {
+        didSet { UserDefaults.standard.set(batchLimit, forKey: "batchLimit") }
+    }
+    @Published var cacheGB = max(2, UserDefaults.standard.integer(forKey: "cacheGB") == 0 ? 10 : UserDefaults.standard.integer(forKey: "cacheGB")) {
+        didSet { UserDefaults.standard.set(cacheGB, forKey: "cacheGB") }
+    }
+    @Published var autoReclaimCache = UserDefaults.standard.object(forKey: "autoReclaimCache") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(autoReclaimCache, forKey: "autoReclaimCache") }
+    }
+    @Published var intervalMinutes = NumericPreference.intervalMinutes.read() {
+        didSet {
+            let bounded = NumericPreference.intervalMinutes.save(intervalMinutes)
+            // Published setters re-enter observers; only write back when clamping changed the value.
+            if intervalMinutes != bounded { intervalMinutes = bounded }
+            if autoRunning && !busy { nextRun = Date().addingTimeInterval(Double(intervalMinutes * 60)) }
+        }
+    }
+    @Published var macReserveGB = NumericPreference.macReserveGB.read() {
+        didSet {
+            let bounded = NumericPreference.macReserveGB.save(macReserveGB)
+            if macReserveGB != bounded { macReserveGB = bounded }
+        }
+    }
+    @Published var pixelReserveGB = NumericPreference.pixelReserveGB.read() {
+        didSet {
+            let bounded = NumericPreference.pixelReserveGB.save(pixelReserveGB)
+            if pixelReserveGB != bounded { pixelReserveGB = bounded }
+        }
+    }
+    @Published var maxTemperatureC = NumericPreference.maxTemperatureC.read() {
+        didSet {
+            let bounded = NumericPreference.maxTemperatureC.save(maxTemperatureC)
+            if maxTemperatureC != bounded { maxTemperatureC = bounded }
+        }
+    }
+    @Published var loginEnabled = SMAppService.mainApp.status == .enabled
+    private var observer: LibraryObserver?
+    private var observedAssets: PHFetchResult<PHAsset>?
+    private var refreshTask: Task<Void, Never>?
+    private var libraryRevision = 0
+    private var scannedRevision = -1
+    private var lastScan = Date.distantPast
+    private var newAssetsPending = false
+    private var started = false
+    private var stopRequested = false
+    private var timer: Task<Void, Never>?
+    private var worker: Task<Void, Never>?
+    #if PIXELBRIDGE_TESTING
+    var testBatchOperation: (() async -> Void)?
+    #endif
+    private var retries: [String: RetryInfo] = [:]
+    private let state: URL
+    private let staging: URL
+    init(root: URL = bridgeRoot) {
+        state = root.appendingPathComponent("State"); staging = root.appendingPathComponent("Staging")
+    }
+    private var core: URL { Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("pixelbridge-core") }
+    private var exiftool: URL { Bundle.main.resourceURL!.appendingPathComponent("exiftool/exiftool") }
+    var needsAttention: Bool { [.status_waiting, .status_attention].contains(status.key) }
+    var delivered: Int { rows.filter(\.delivered).count }
+    var failed: Int { rows.filter { $0.phase == "failed" }.count }
+    var ready: Bool { authorized && !selectedDevice.isEmpty && !adbPath.isEmpty }
+    var displayDevice: String { devices.first { $0.id == selectedDevice }?.label ?? tr(.device_unselected) }
+
+    func launch() async {
+        guard !started else { return }; started = true
+        do {
+            try ensureDirectory(state); try ensureDirectory(staging)
+            if let text = try? String(contentsOf: state.appendingPathComponent("activity.log"), encoding: .utf8) { logs = Array(text.split(separator: "\n").map(String.init).suffix(200).reversed()) }
+            if let data = try? Data(contentsOf: state.appendingPathComponent("retry.json")) {
+                retries = (try? JSONDecoder().decode([String: RetryInfo].self, from: data)) ?? [:]
+            }
+            try await refreshQueue()
+            authorized = [.authorized, .limited].contains(PHPhotoLibrary.authorizationStatus(for: .readWrite))
+            detectADB()
+            await refreshDevice()
+            if authorized { observeLibrary(); await scan() }
+            if autoRunning { nextRun = Date() }
+            timer = Task { [weak self] in
+                while !Task.isCancelled {
+                    do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
+                    guard let self else { return }
+                    let access = [.authorized, .limited].contains(PHPhotoLibrary.authorizationStatus(for: .readWrite))
+                    if self.authorized != access {
+                        self.authorized = access
+                        if access { self.observeLibrary(); self.libraryRevision += 1 }
+                        else { self.library = []; self.gallery = [:]; self.totalAssets = 0; self.libraryCounts = Message(.photos_access_closed) }
+                    }
+                    if access && !self.scanning && !self.busy && (self.libraryRevision != self.scannedRevision || Date().timeIntervalSince(self.lastScan) >= 600) { await self.scan() }
+                    if self.autoRunning && self.worker == nil && !self.busy && !self.scanning && (self.nextRun ?? .distantPast) <= Date() {
+                        await self.batch()
+                    }
+                }
+            }
+        } catch { report(error) }
+    }
+    func requestPhotos() async {
+        NSApp.activate(ignoringOtherApps: true)
+        status = Message(.status_permission_pending)
+        let result = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+        authorized = [.authorized, .limited].contains(result)
+        if authorized { observeLibrary(); status = Message(.status_library_connected); await scan() }
+        else { status = Message(.status_permission_required); detail = Message(.photos_permission_help) }
+    }
+    private func observeLibrary() {
+        guard observer == nil else { return }
+        let observer = LibraryObserver { [weak self] change in
+            Task { @MainActor [weak self] in self?.libraryChanged(change) }
+        }
+        self.observer = observer
+        PHPhotoLibrary.shared().register(observer)
+    }
+    private func libraryChanged(_ change: PHChange) {
+        if let observedAssets, change.changeDetails(for: observedAssets) == nil { return }
+        libraryRevision += 1
+        refreshTask?.cancel()
+        refreshTask = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
+            guard let self, self.authorized, !self.scanning else { return }
+            await self.scan()
+        }
+    }
+    func scan(force: Bool = false) async {
+        guard authorized, !scanning else { return }
+        if !force && scannedRevision == libraryRevision && Date().timeIntervalSince(lastScan) < 600 { return }
+        scanning = true
+        let revision = libraryRevision
+        let previousItems = library
+        let hadSnapshot = observedAssets != nil
+        let result = await Task.detached(priority: .utility) { () -> ([LibraryItem], Int, Message, PHFetchResult<PHAsset>, [String: [LibraryItem]], Int) in
+            let options = PHFetchOptions()
+            options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
+            options.includeAllBurstAssets = true
+            let assets = PHAsset.fetchAssets(with: options)
+            await MainActor.run { self.totalAssets = assets.count }
+            let previous = Dictionary(uniqueKeysWithValues: previousItems.map { ($0.id, $0) })
+            var items: [LibraryItem] = []
+            items.reserveCapacity(assets.count)
+            var gallery: [String: [LibraryItem]] = [:]
+            var added = 0
+            var live = 0; var photos = 0; var videos = 0
+            assets.enumerateObjects { asset, _, _ in
+                guard asset.mediaType == .image || asset.mediaType == .video else { return }
+                let kind = asset.mediaType == .video ? "video" : (asset.mediaSubtypes.contains(.photoLive) ? "motion" : "photo")
+                if kind == "video" { videos += 1 } else if kind == "motion" { live += 1 } else { photos += 1 }
+                // Avoid one Photos database round-trip per resource during a full-library scan.
+                // Names are resolved only when an asset is actually exported.
+                let date = asset.creationDate ?? .distantPast
+                let id = asset.localIdentifier
+                let item: LibraryItem
+                if let old = previous[id], old.date == date, old.kind == kind, old.modified == asset.modificationDate { item = old }
+                else { item = LibraryItem(id: id, name: date.formatted(date: .abbreviated, time: .shortened), date: date, kind: kind, modified: asset.modificationDate) }
+                if previous[id] == nil { added += 1 }
+                items.append(item)
+                gallery["all", default: []].append(item)
+                gallery[kind, default: []].append(item)
+            }
+            return (items, assets.count, Message(.library_counts, String(describing: photos.formatted()), String(describing: live.formatted()), String(describing: videos.formatted())), assets, gallery, added)
+        }.value
+        guard [.authorized, .limited].contains(PHPhotoLibrary.authorizationStatus(for: .readWrite)) else {
+            authorized = false; library = []; gallery = [:]; totalAssets = 0; libraryCounts = Message(.photos_access_closed)
+            scanning = false
+            return
+        }
+        if library != result.0 { library = result.0 }
+        if gallery != result.4 { gallery = result.4; galleryRevision += 1 }
+        if totalAssets != result.1 { totalAssets = result.1 }
+        if libraryCounts != result.2 { libraryCounts = result.2 }
+        observedAssets = result.3
+        scannedRevision = revision; lastScan = Date(); lastLibraryRefresh = lastScan
+        if hadSnapshot {
+            let added = result.5
+            if added > 0 {
+                log(tr(.log_library_updated, String(describing: added)))
+                if autoRunning { newAssetsPending = true; nextRun = Date() }
+            }
+        }
+        scanning = false
+    }
+    func detectADB() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates = [
+            UserDefaults.standard.string(forKey: "customADB") ?? "",
+            bridgeRoot.appendingPathComponent("Tools/platform-tools/adb").path,
+            home + "/Library/Android/sdk/platform-tools/adb", "/opt/homebrew/bin/adb", "/usr/local/bin/adb"
+        ]
+        adbPath = candidates.first { FileManager.default.isExecutableFile(atPath: $0) } ?? ""
+    }
+    func chooseADB() {
+        let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+        panel.message = tr(.adb_choose_prompt)
+        if panel.runModal() == .OK, let url = panel.url {
+            guard url.lastPathComponent == "adb", FileManager.default.isExecutableFile(atPath: url.path) else { report(fail(Message(.error_adb_executable))); return }
+            UserDefaults.standard.set(url.path, forKey: "customADB"); detectADB()
+            Task { await refreshDevice() }
+        }
+    }
+    func installADB() async {
+        guard !installing, !busy else { return }
+        installing = true; defer { installing = false }
+        status = Message(.status_tools_downloading)
+        let temp = bridgeRoot.appendingPathComponent("Tools/install-" + UUID().uuidString)
+        do {
+            try ensureDirectory(temp)
+            defer { try? FileManager.default.removeItem(at: temp) }
+            let url = URL(string: "https://dl.google.com/android/repository/platform-tools-latest-darwin.zip")!
+            let (download, response) = try await URLSession.shared.download(from: url)
+            guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { throw fail(Message(.error_tools_download)) }
+            let zip = temp.appendingPathComponent("tools.zip")
+            try FileManager.default.moveItem(at: download, to: zip)
+            _ = try await processOutput(URL(fileURLWithPath: "/usr/bin/ditto"), ["-x", "-k", zip.path, temp.path], timeout: 120)
+            let extracted = temp.appendingPathComponent("platform-tools")
+            let version = try await processOutput(extracted.appendingPathComponent("adb"), ["version"], timeout: 30)
+            guard version.contains("Android Debug Bridge") else { throw fail(Message(.error_tools_validation)) }
+            let target = bridgeRoot.appendingPathComponent("Tools/platform-tools")
+            // An existing managed install is retained. This action installs missing tools only.
+            guard !FileManager.default.fileExists(atPath: target.path) else { throw fail(Message(.error_tools_existing)) }
+            try FileManager.default.moveItem(at: extracted, to: target)
+            detectADB(); status = Message(.status_tools_installed); log(tr(.log_tools_installed))
+            await refreshDevice()
+        } catch { report(error) }
+    }
+    func refreshDevice() async {
+        detectADB()
+        guard !adbPath.isEmpty else { deviceMessage = Message(.device_tools_required); return }
+        do {
+            let output = try await processOutput(URL(fileURLWithPath: adbPath), ["devices", "-l"], timeout: 30)
+            devices = output.split(separator: "\n").compactMap { line in
+                let bits = line.split(whereSeparator: \.isWhitespace).map(String.init)
+                guard bits.count >= 2, ["device", "unauthorized", "offline"].contains(bits[1]) else { return nil }
+                let model = bits.first { $0.hasPrefix("model:") }?.replacingOccurrences(of: "model:", with: "").replacingOccurrences(of: "_", with: " ") ?? bits[0]
+                return DeviceInfo(id: bits[0], label: model, state: bits[1])
+            }
+            if selectedDevice.isEmpty, devices.count == 1, devices[0].label.contains("Pixel") { selectedDevice = devices[0].id }
+            guard let device = devices.first(where: { $0.id == selectedDevice }) else { deviceMessage = Message(.device_waiting); deviceMetrics = .empty; return }
+            guard device.state == "device" else { deviceMessage = device.state == "unauthorized" ? Message(.device_authorize) : Message(.device_offline); return }
+            let json = try await invoke(["device-status", "--adb", adbPath, "--device", selectedDevice, "--max-temperature-c", "100", "--min-free-gb", "0"])
+            if let values = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] {
+                deviceMetrics = Message(.device_metrics, String(format: "%.0f", values["battery_percent"] as? Double ?? 0), String(format: "%.1f", values["temperature_c"] as? Double ?? 0), String(format: "%.1f", values["free_gb"] as? Double ?? 0))
+            }
+            deviceMessage = Message(.device_connected, String(describing: device.label))
+        } catch { deviceMessage = Message(.device_connection_failed); deviceMetrics = Message(error: error) }
+    }
+    func startAutomatic() {
+        guard !pausing else { return }
+        autoRunning = true; UserDefaults.standard.set(true, forKey: "automatic"); nextRun = Date()
+        Task { await batch() }
+    }
+    func pause() {
+        stopRequested = true
+        autoRunning = false; UserDefaults.standard.set(false, forKey: "automatic"); nextRun = nil
+        pausing = worker != nil
+        worker?.cancel()
+        status = pausing ? Message(.status_pausing) : Message(.status_paused)
+        if !pausing { detail = Message(.backup_paused) }
+    }
+    func retryNow() {
+        guard !pausing else { return }
+        let failedIDs = Set(rows.filter { $0.phase == "failed" }.map(\.id))
+        guard !failedIDs.isEmpty else { return }
+        pendingRetryIDs.formUnion(failedIDs)
+        // Reset only the selected failures; retain unrelated retry history.
+        for id in failedIDs { retries[id] = nil }
+        saveRetries()
+        startAutomatic()
+    }
+    func taskLabel(_ row: QueueRow) -> String {
+        if pendingRetryIDs.contains(row.id) { return tr(.queue_retry_queued) }
+        if !row.delivered && row.phase != "failed" && (currentItem?.id != row.id || !busy) { return tr(.queue_discovered) }
+        return row.label
+    }
+    // Every entry point shares one owned task so pause cancels real work, and
+    // a rapid resume cannot overlap the old worker or lose the batch lease.
+    func batch() async {
+        guard worker == nil, !busy, !scanning, !installing, !pausing else { return }
+        let task = Task { await self.runBatch() }
+        worker = task
+        await task.value
+        worker = nil; pausing = false
+    }
+    private func runBatch() async {
+        #if PIXELBRIDGE_TESTING
+        if let testBatchOperation {
+            busy = true
+            await testBatchOperation()
+            busy = false
+            return
+        }
+        #endif
+        if Task.isCancelled { status = Message(.status_paused); return }
+        let lease: BatchLease
+        do {
+            guard let acquired = try BatchLease.acquire(at: state.appendingPathComponent("batch.lock")) else {
+                status = Message(.status_waiting); detail = Message(.backup_another_instance)
+                nextRun = Date().addingTimeInterval(30)
+                return
+            }
+            lease = acquired
+        } catch { report(error); nextRun = Date().addingTimeInterval(Double(intervalMinutes * 60)); return }
+        defer { lease.release() }
+        busy = true; completed = 0; batchTotal = batchLimit
+        stopRequested = false
+        newAssetsPending = false
+        var madeAttempt = false
+        let activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled], reason: tr(.backup_activity_reason))
+        defer {
+            ProcessInfo.processInfo.endActivity(activity)
+            busy = false; currentName = ""; currentItem = nil
+            if autoRunning { nextRun = Date().addingTimeInterval(newAssetsPending || (madeAttempt && !pendingRetryIDs.isEmpty) ? 2 : Double(intervalMinutes * 60)) }
+        }
+        do {
+            guard authorized else { throw fail(Message(.error_photos_permission)) }
+            await refreshDevice()
+            try Task.checkCancellation()
+            guard ready else { throw fail(Message(.error_setup_required)) }
+            await scan()
+            try Task.checkCancellation()
+            try await refreshQueue()
+            pendingRetryIDs.subtract(rows.filter(\.delivered).map(\.id))
+            if autoReclaimCache { await reclaimDeliveredCache() }
+            let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+            let availableIDs = Set(library.map(\.id))
+            pendingRetryIDs.formIntersection(availableIDs)
+            let candidates = transferCandidates(library: library, rows: rows, retries: retries,
+                requested: pendingRetryIDs, limit: batchLimit, now: Date())
+            batchTotal = candidates.count
+            var failures = 0
+            for item in candidates {
+                try Task.checkCancellation()
+                try await guardDevice()
+                let prior = byID[item.id]
+                currentName = item.name
+                currentItem = item
+                pendingRetryIDs.remove(item.id)
+                madeAttempt = true
+                do {
+                    try await process(item, prior: prior)
+                    retries[item.id] = nil; completed += 1
+                    log(tr(.log_delivered, String(describing: item.name)))
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    if Task.isCancelled { throw CancellationError() }
+                    failures += 1
+                    let n = (retries[item.id]?.attempts ?? 0) + 1
+                    retries[item.id] = RetryInfo(attempts: n, next: Date().addingTimeInterval(min(21600, 60 * pow(2, Double(min(n, 9))))))
+                    if prior == nil { _ = try? await invoke(["queue-add", "--state-dir", state.path, "--asset-id", item.id, "--filename", currentName]) }
+                    try? await transition(item.id, "failed", message: error.localizedDescription)
+                    log("\(item.name)：\(error.localizedDescription)")
+                }
+                saveRetries(); cacheBytes = await measuredCacheBytes()
+            }
+            cacheBytes = await measuredCacheBytes()
+            status = stopRequested ? Message(.status_paused) : (autoRunning ? Message(.status_automatic) : Message(.status_batch_finished))
+            detail = Message(.batch_summary, String(completed), String(failures))
+            if candidates.isEmpty { detail = Message(.batch_empty, String(describing: intervalMinutes)) }
+        } catch is CancellationError {
+            status = Message(.status_paused); detail = Message(.backup_paused)
+        } catch {
+            status = stopRequested ? Message(.status_paused) : Message(.status_waiting)
+            detail = stopRequested ? Message(.backup_paused) : Message(error: error)
+            if !stopRequested { log(error.localizedDescription) }
+        }
+    }
+    private func guardDevice(extraBytes: Int64 = 0, cacheExtraBytes: Int64 = 0) async throws {
+        try Task.checkCancellation()
+        guard !selectedDevice.isEmpty, !adbPath.isEmpty else { throw fail(Message(.error_pixel_waiting)) }
+        let product = try await processOutput(URL(fileURLWithPath: adbPath), ["-s", selectedDevice, "shell", "getprop", "ro.product.device"], timeout: 30).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard ["marlin", "sailfish"].contains(product) else { throw fail(Message(.error_pixel_generation)) }
+        let minimumGB = Double(pixelReserveGB) + Double(extraBytes) / 1_000_000_000
+        do {
+            _ = try await invoke(["device-status", "--adb", adbPath, "--device", selectedDevice, "--max-temperature-c", String(maxTemperatureC), "--min-free-gb", String(minimumGB)])
+        } catch {
+            let message = error.localizedDescription
+            if message.contains("Pixel is too warm") {
+                throw fail(Message(.error_pixel_temperature, String(describing: maxTemperatureC)))
+            }
+            if message.contains("below the batch reserve") {
+                throw fail(Message(.error_pixel_storage))
+            }
+            if message.contains("Pixel is not ready") || message.contains("device offline") || message.contains("not found") {
+                throw fail(Message(.error_pixel_disconnected))
+            }
+            throw error
+        }
+        cacheBytes = await measuredCacheBytes()
+        guard cacheBytes + cacheExtraBytes <= Int64(cacheGB) * 1_000_000_000 else { throw fail(Message(.error_cache_budget, String(describing: cacheGB))) }
+        guard diskFree(bridgeRoot) > Int64(macReserveGB) * 1_000_000_000 + cacheExtraBytes else { throw fail(Message(.error_mac_storage, String(describing: macReserveGB))) }
+    }
+    private func process(_ item: LibraryItem, prior: QueueRow?) async throws {
+        try Task.checkCancellation()
+        let assetResult = PHAsset.fetchAssets(withLocalIdentifiers: [item.id], options: nil)
+        guard let asset = assetResult.firstObject else { throw fail(Message(.error_asset_missing)) }
+        let resources = PHAssetResource.assetResources(for: asset)
+        let videoAsset = asset.mediaType == .video
+        guard let primary = resources.first(where: { $0.type == (videoAsset ? .video : .photo) }) else { throw fail(Message(.error_original_missing)) }
+        currentName = primary.originalFilename
+        if prior == nil { _ = try await invoke(["queue-add", "--state-dir", state.path, "--asset-id", item.id, "--filename", primary.originalFilename]) }
+        let live = asset.mediaSubtypes.contains(.photoLive)
+        let ext = (primary.originalFilename as NSString).pathExtension.lowercased()
+        guard ["heic", "heif", "jpg", "jpeg", "png", "gif", "webp", "tif", "tiff", "mov", "mp4", "m4v"].contains(ext) else { throw fail(Message(.error_format_unsupported, String(describing: ext))) }
+        let jobDir = staging.appendingPathComponent(stableID(item.id))
+        try ensureDirectory(jobDir)
+        let source = jobDir.appendingPathComponent("original." + ext)
+        let outputName = "PB_" + stableID(item.id) + (live ? "_MP." : ".") + ext
+        let prepared = live ? jobDir.appendingPathComponent(outputName) : source
+        var hash = prior?.sha256
+        let canResumePrepared = prior?.phase == "prepared" && FileManager.default.fileExists(atPath: prepared.path) && hash != nil
+        if canResumePrepared {
+            guard try await hashFile(prepared) == hash else {
+                // Preserve bad cache for inspection, but never reuse it on the next retry.
+                let quarantined = staging.appendingPathComponent(stableID(item.id) + ".corrupt-" + UUID().uuidString)
+                try FileManager.default.moveItem(at: jobDir, to: quarantined)
+                throw fail(Message(.error_cache_corrupt))
+            }
+        } else {
+            // A prepared state whose file disappeared needs an explicit failed/retry transition.
+            if prior?.phase == "prepared" { try await transition(item.id, "failed", message: tr(.queue_prepared_missing)) }
+            try await transition(item.id, "exporting")
+            status = Message(.status_exporting); detail = .raw(item.name)
+            try await exportOriginal(primary, to: source, budget: await availableBudget())
+            if live {
+                guard let motion = resources.first(where: { $0.type == .pairedVideo }) else { throw fail(Message(.error_motion_missing)) }
+                let movie = jobDir.appendingPathComponent("motion.mov")
+                try await exportOriginal(motion, to: movie, budget: await availableBudget())
+                let imageSize = Int64((try source.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0)
+                let videoSize = Int64((try movie.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0)
+                try await guardDevice(extraBytes: imageSize + videoSize * 8, cacheExtraBytes: imageSize + videoSize * 8)
+                status = Message(.status_motion_preparing)
+                let text = try await invoke(["prepare", "--image", source.path, "--video", movie.path, "--output", prepared.path, "--exiftool", exiftool.path, "--force"])
+                hash = value("sha256", text)
+            } else { hash = try await hashFile(prepared) }
+            guard let hash else { throw fail(Message(.error_hash_unavailable)) }
+            try await transition(item.id, "prepared", hash: hash)
+        }
+        guard let hash else { throw fail(Message(.error_hash_missing)) }
+        let size = Int64((try prepared.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0)
+        // Destination uses the stable Photos identity, not a reusable camera filename.
+        let delivery = live ? prepared : jobDir.appendingPathComponent(outputName)
+        if !live {
+            if FileManager.default.fileExists(atPath: delivery.path), try await hashFile(delivery) != hash {
+                try FileManager.default.moveItem(at: delivery, to: delivery.appendingPathExtension("corrupt-" + UUID().uuidString))
+            }
+            if !FileManager.default.fileExists(atPath: delivery.path) { try FileManager.default.linkItem(at: source, to: delivery) }
+        }
+        try await guardDevice(extraBytes: size)
+        status = Message(.status_transferring)
+        let output = try await invoke(["push", "--file", delivery.path, "--adb", adbPath, "--device", selectedDevice])
+        guard value("sha256", output) == hash, let remote = value("remote", output) else { throw fail(Message(.error_transfer_verification)) }
+        try await transition(item.id, "transferred", hash: hash, remote: remote)
+        // A cleanup error must never downgrade a durable, verified delivery to failed.
+        if autoReclaimCache {
+            do {
+                let bytes = try await reclaimCache(item.id)
+                log(tr(.log_cache_reclaimed, String(describing: ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file))))
+            } catch { log(tr(.log_cache_retained, String(describing: error.localizedDescription))) }
+        }
+    }
+    private func reclaimCache(_ assetID: String) async throws -> Int64 {
+        let output = try await processOutput(core, ["reclaim-cache", "--bridge-root", bridgeRoot.path, "--asset-id", assetID, "--adb", adbPath, "--device", selectedDevice], timeout: 120)
+        return Int64(value("reclaimed_bytes", output) ?? "0") ?? 0
+    }
+    private func reclaimDeliveredCache() async {
+        // Only reconsider exact job directories with both a completed queue record and a current Photos asset.
+        let folder = staging, snapshot = rows, photos = library
+        let candidates = await Task.detached(priority: .utility) {
+            let folders = Set((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? [])
+            let assets = Set(photos.map(\.id))
+            return Array(snapshot.lazy.filter { $0.delivered && assets.contains($0.id) && folders.contains(stableID($0.id)) }.prefix(3))
+        }.value
+        guard !candidates.isEmpty else { return }
+        status = Message(.status_reclaiming)
+        var count = 0, failures = 0
+        var bytes: Int64 = 0
+        for (index, row) in candidates.prefix(3).enumerated() {
+            if stopRequested || Task.isCancelled { break }
+            detail = Message(.cache_verifying, String(describing: index + 1), String(describing: candidates.count), String(describing: row.filename))
+            do { bytes += try await reclaimCache(row.id); count += 1 }
+            catch {
+                failures += 1
+                log(tr(.log_cache_file_retained, String(describing: row.filename), String(describing: error.localizedDescription)))
+                // Bound repeated verification failures (e.g. an unplugged Pixel); try again next round.
+                if failures >= 3 { break }
+            }
+        }
+        cacheBytes = await measuredCacheBytes()
+        if count > 0 { log(tr(.log_cache_batch_reclaimed, String(describing: count), String(describing: ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)))) }
+    }
+    private func measuredCacheBytes() async -> Int64 {
+        let folder = staging
+        return await Task.detached(priority: .utility) { folderBytes(folder) }.value
+    }
+    private func availableBudget() async -> Int64 {
+        max(0, min(Int64(cacheGB) * 1_000_000_000 - (await measuredCacheBytes()), diskFree(bridgeRoot) - Int64(macReserveGB) * 1_000_000_000))
+    }
+    private func hashFile(_ url: URL) async throws -> String {
+        guard let hash = value("sha256", try await invoke(["hash", "--file", url.path])) else { throw fail(Message(.error_hash_failed)) }; return hash
+    }
+    private func value(_ key: String, _ output: String) -> String? { output.split(separator: "\n").first { $0.hasPrefix(key + ":") }.map { $0.dropFirst(key.count + 1).trimmingCharacters(in: .whitespaces) } }
+    private func invoke(_ args: [String]) async throws -> String {
+        let executable = core
+        if args.first?.hasPrefix("queue-") == true {
+            // Finish short durable queue transactions even if pause arrives.
+            return try await Task.detached { try await processOutput(executable, args, timeout: 30) }.value
+        }
+        return try await processOutput(executable, args)
+    }
+    private func transition(_ id: String, _ phase: String, hash: String? = nil, remote: String? = nil, message: String? = nil) async throws {
+        var args = ["queue-transition", "--state-dir", state.path, "--asset-id", id, "--phase", phase]
+        if let hash { args += ["--sha256", hash] }; if let remote { args += ["--remote", remote] }; if let message { args += ["--message", message] }
+        let output = try await invoke(args)
+        let row = try JSONDecoder().decode(QueueRow.self, from: Data(output.utf8))
+        if let index = rows.firstIndex(where: { $0.id == row.id }) { rows.remove(at: index) }
+        rows.insert(row, at: 0)
+    }
+    private func refreshQueue() async throws {
+        let output = try await invoke(["queue-list", "--state-dir", state.path])
+        rows = try await Task.detached(priority: .utility) {
+            try JSONDecoder().decode([QueueRow].self, from: Data(output.utf8)).sorted { $0.timestamp_ms > $1.timestamp_ms }
+        }.value
+        cacheBytes = await measuredCacheBytes()
+    }
+    private func saveRetries() { if let data = try? JSONEncoder().encode(retries) { try? data.write(to: state.appendingPathComponent("retry.json"), options: .atomic) } }
+    func setLogin(_ enabled: Bool) {
+        do { if enabled { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }; loginEnabled = SMAppService.mainApp.status == .enabled }
+        catch { report(error) }
+    }
+    func showData() { NSWorkspace.shared.open(bridgeRoot) }
+    func showSettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Photos")!) }
+    private func report(_ error: Error) { status = Message(.status_attention); detail = Message(error: error); log(error.localizedDescription) }
+    private func log(_ text: String) {
+        logs.insert(Date().formatted(date: .numeric, time: .standard) + "  " + text.replacingOccurrences(of: "\n", with: " "), at: 0)
+        if logs.count > 200 { logs.removeLast() }
+        try? logs.reversed().joined(separator: "\n").write(to: state.appendingPathComponent("activity.log"), atomically: true, encoding: .utf8)
+    }
+}

@@ -1,0 +1,73 @@
+# PixelBridge
+
+[中文](README.zh-Hans.md) · [Download](https://github.com/qhhonx/pixelbridge/releases) · [Website](https://pixelbridge-app-beta.vercel.app)
+
+A native macOS app that sends Apple Photos originals to a Google Pixel for a second backup in Google Photos.
+
+**First public beta — free and open source. Apple Silicon, macOS 14 or later.**
+The app uses an ad hoc integrity signature and is **not notarized by Apple**.
+
+## What it does
+
+- Reads your System Photo Library with PhotoKit, including originals stored in iCloud when Optimize Mac Storage is enabled.
+- Shows a paginated native photo grid, with photo-type and transfer-status icons.
+- Packages supported Live Photos as motion photos, retaining the still image and paired video together.
+- Transfers files through USB/ADB with hashes, resumable progress, retry backoff and temperature/storage guards.
+- Stores progress in a local SQLite queue and can reclaim verified Mac staging files.
+- Offers English and Simplified Chinese, following your system language by default.
+- Checks for app updates with Sparkle; downloaded update archives are verified with a separate Ed25519 signing key.
+
+The path is **Apple Photos / iCloud → Mac → Pixel → Google Photos**. No PixelBridge server receives your photos. The website serves product information and release metadata only.
+
+## Install and start
+
+1. Download `PixelBridge-…-arm64.zip` from [Releases](https://github.com/qhhonx/pixelbridge/releases), extract it and move **PixelBridge.app to Applications**.
+2. Try opening the app. If macOS blocks it and you trust the source, use **System Settings → Privacy & Security → Open Anyway**, then confirm. Follow [Apple's instructions](https://support.apple.com/en-us/102445). This beta is not notarized; do not disable system-wide security. Managed Macs may restrict exceptions. Updates may require renewed approval or Photos permission.
+3. Allow access to your photo library. Connect a Pixel by USB, enable USB debugging and approve the computer on the phone. The app can guide you through installing Android Platform Tools after you accept Google's terms.
+4. Sign into Google Photos on the Pixel, enable backup and check the account's storage benefit and selected backup quality.
+5. Start with a small batch. Check the photos and motion playback on both Google Photos web and the phone. Enable automatic backup once you are satisfied.
+
+Keep the Mac awake, the Pixel connected, and both devices online during transfers. Closing the window keeps the menu-bar app running; quitting stops scheduling. Keep an old phone ventilated and inspect its battery condition.
+
+## Understand backup status
+
+**Transferred means a file reached the Pixel and passed file verification. It does not mean Google Photos has backed it up.** Google Photos uploads independently. Motion playback can become available after upload processing finishes.
+
+Mac staging cleanup only removes eligible files after durable progress is saved and the corresponding Pixel file passes another hash check. It does not delete Apple Photos originals, Pixel files or backup progress. Free Pixel storage through Google Photos only after confirming cloud backup.
+
+The app transfers **unmodified originals**. Album organization, edits, deleted-item mirroring, and every Apple media format are not reproduced. Library identifiers can differ between Macs; moving to a different photo library can cause re-transfers. Google storage benefits are device/account dependent and subject to [Google's policy](https://support.google.com/pixelphone/answer/6220791). Large-library unattended operation remains a beta limitation.
+
+## Updates
+
+Use **PixelBridge → Check for Updates…**, the menu-bar menu or **Settings → Software updates**. Automatic checks are enabled by default; you decide when to install. A relaunch waits for the active backup to stop safely. No system profile is sent by the updater.
+
+This beta receives the newest complete public release, including subsequent betas. Sparkle's signature verifies update authenticity; it is separate from Apple notarization. GitHub/Vercel availability is required to check and download updates. Manual downloads remain available if an update cannot be installed.
+
+## Build from source
+
+Requirements: Apple Silicon Mac, macOS 14+, Xcode Command Line Tools, Rust/Cargo, Python 3 (build/test scripts only), Perl and an internet connection to fetch dependencies. End users do not need Rust or Python.
+
+```sh
+./scripts/build-macos-app.sh
+./scripts/package-release.sh
+```
+
+Builds download checksum-pinned ExifTool and Sparkle archives. Rust dependencies are locked. The output is `dist/PixelBridge.app` and a ZIP in `dist/release/`. No Apple developer certificate is required. Self-built forks must supply their own update feed and signing key before distributing; the upstream private signing key is not part of the repository.
+
+```sh
+cargo test --locked
+./scripts/test-macos.sh
+python3 tests/transport_scenarios.py
+cd site
+npm ci
+npm test
+npm run build
+```
+
+Tests use temporary synthetic files and simulated devices; they do not transfer your actual photos. The AppKit grid test requires a macOS graphical session.
+
+See [architecture](docs/ARCHITECTURE.md), [localization](docs/LOCALIZATION.md), [release automation](docs/RELEASING.md), [privacy](docs/PRIVACY.md) and [contributing](CONTRIBUTING.md).
+
+## License
+
+Project code is MIT licensed. Third-party software retains its own licenses; see [notices](THIRD_PARTY_NOTICES.md). PixelBridge is an independent project, not affiliated with Apple or Google. Product names and logos belong to their respective owners.
