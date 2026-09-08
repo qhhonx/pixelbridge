@@ -26,6 +26,8 @@ When publication is approved, change repository visibility, configure the releas
 
 Once release publication is enabled, pushing a tag matching `v<VERSION>` also triggers checks and release. Published versions are immutable in normal CI: another push without a version bump produces a build artifact but does not overwrite a user's existing release. CI-generated tags do not recursively trigger another workflow run. PR jobs cannot access the release secret.
 
+The release job validates its signing secret against the app's public key on every eligible run, including when the version is already published. It signs only a temporary probe for this check. An existing version produces an explicit summary explaining that publication was skipped without changing assets. Missing or mismatched signing keys fail the job. Official Actions are pinned to full commit hashes; review their changes before updating those pins.
+
 Before publication, ensure the build number is greater than every existing release's build number. No delta updates are generated in this beta pipeline.
 
 ## Website

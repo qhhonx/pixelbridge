@@ -14,8 +14,8 @@ jobs:
   website:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: npm
@@ -28,7 +28,7 @@ jobs:
   app:
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Rust toolchain
         run: rustup show
       - run: cargo test --locked
@@ -37,7 +37,7 @@ jobs:
       - run: python3 tests/sparkle_integration.py
       - run: python3 tests/transport_scenarios.py
       - run: ./scripts/package-release.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: pixelbridge-macos
           path: dist/release/
@@ -53,7 +53,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Determine whether this version is already published
         id: version
         env:
@@ -70,13 +70,30 @@ jobs:
           PY
       - if: steps.version.outputs.publish == 'true'
         run: python3 scripts/check-release-order.py "$RUNNER_TEMP/releases.json"
-      - uses: actions/download-artifact@v4
+      - name: Fetch verified signing tools
+        run: ./scripts/fetch-dependencies.sh
+      - name: Validate release signing key
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SPARKLE_PRIVATE_KEY" ]; then
+            echo '::error::Configure the SPARKLE_PRIVATE_KEY repository secret before enabling releases.'
+            exit 1
+          fi
+          export SPARKLE_KEY_FILE="$RUNNER_TEMP/sparkle-preflight-key"
+          trap 'rm -f "$SPARKLE_KEY_FILE"' EXIT
+          umask 077
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$SPARKLE_KEY_FILE"
+          ./scripts/check-signing-key.sh
+      - name: Keep the existing release unchanged
+        if: steps.version.outputs.publish != 'true'
+        run: |
+          echo "Version $(cat VERSION) is already published. Signing configuration passed; existing release assets were not changed." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: steps.version.outputs.publish == 'true'
         with:
           name: pixelbridge-macos
           path: dist/release
-      - if: steps.version.outputs.publish == 'true'
-        run: ./scripts/fetch-dependencies.sh
       - name: Sign update and validate release
         if: steps.version.outputs.publish == 'true'
         env:
