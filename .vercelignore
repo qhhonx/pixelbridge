@@ -1,0 +1,8 @@
+# Only the website is needed by this Vercel project.
+*
+!site
+!site/**
+site/node_modules
+site/.next
+site/.env*
+!site/.env.example
