@@ -58,6 +58,7 @@ Builds download checksum-pinned ExifTool and Sparkle archives. Rust dependencies
 cargo test --locked
 ./scripts/test-macos.sh
 python3 tests/transport_scenarios.py
+python3 tests/sparkle_integration.py
 cd site
 npm ci
 npm test

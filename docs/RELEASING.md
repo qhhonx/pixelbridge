@@ -11,7 +11,7 @@ The repository's public key belongs to upstream releases. A fork needs a new key
 1. Update `VERSION` and Cargo's package version (including Cargo.lock). Beta versions use `0.1.0-beta.1`.
 2. Set `CFBundleShortVersionString` to its numeric part and **increase `CFBundleVersion` for every release**, including betas. Sparkle compares this build number.
 3. Update `docs/RELEASE-NOTES.md` with the actual changes. Keep the signing/notarization notice.
-4. Push to `main`. Checks build the website and optimized native app, then upload a CI artifact. If that version has not been published, the release job signs its ZIP and appcast, verifies the archive with CryptoKit and publishes a GitHub Release. A `-beta.N` version is a prerelease.
+4. Push to `main`. Checks build the website and optimized native app, exercise a real Sparkle installation against disposable test apps, then upload a CI artifact. If that version has not been published, the release job signs its ZIP and appcast, verifies the archive with CryptoKit and publishes a GitHub Release. A `-beta.N` version is a prerelease.
 5. Verify CI, GitHub download, `/download`, `/appcast.xml` and an actual installed-app update. Release publication occurs only after both app and website checks pass. The upload uses a draft until every required asset is present; an interrupted draft can be retried.
 
 Pushing a tag matching `v<VERSION>` also triggers checks and release. Published versions are immutable in normal CI: another push without a version bump produces a build artifact but does not overwrite a user's existing release. CI-generated tags do not recursively trigger another workflow run. PR jobs cannot access the release secret.
