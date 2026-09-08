@@ -1,5 +1,7 @@
 import { latestRelease, releasesURL } from '@/lib/releases';
-export async function GET() {
+import { publicReleasesEnabled } from '@/lib/distribution';
+export async function GET(request: Request) {
+  if (!publicReleasesEnabled) return Response.redirect(new URL('/#download', request.url), 307);
   try {
     const release = await latestRelease();
     return Response.redirect(release?.archive.browser_download_url || releasesURL, 307);

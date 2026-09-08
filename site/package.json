@@ -11,7 +11,7 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "test": "node scripts/test-i18n.mjs && node scripts/test-releases.mjs"
+    "test": "node scripts/test-i18n.mjs && node scripts/test-releases.mjs && node scripts/test-distribution.mjs"
   },
   "dependencies": {
     "@base-ui/react": "1.7.0",

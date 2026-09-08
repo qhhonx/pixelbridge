@@ -6,6 +6,16 @@ The public app is ad hoc signed, not Developer ID signed or notarized. Builds ne
 
 The repository's public key belongs to upstream releases. A fork needs a new keypair, bundle identifier, HTTPS `SUFeedURL`, website URLs and repository URL. Generate an Ed25519 seed with Sparkle's `generate_keys` and export it following upstream documentation. Store the private seed only as the `SPARKLE_PRIVATE_KEY` GitHub Actions secret and in a secure offline backup. Never put it in the repository, build artifacts or Vercel environment.
 
+## Private validation phase
+
+The source repository remains private until the maintainer explicitly approves making it public. Vercel can publish the product website from the private personal repository. Website publication does not grant public access to source code or CI artifacts.
+
+Release publication is disabled by default. The release job requires both a public repository and the repository variable `ENABLE_RELEASE_PUBLISHING=true`; no signing secret is needed for ordinary checks and builds. Do not upload the private update-signing key until its storage destination is approved.
+
+The website defaults to `NEXT_PUBLIC_RELEASES_ENABLED=false`, shows the beta preparation status, and omits a source link. `/download` returns to that status section, and `/appcast.xml` returns an explicit temporary-unavailability response without querying a private repository. Keep `NEXT_PUBLIC_SOURCE_URL` unset. Do not add a private GitHub token to the website to bypass this boundary.
+
+When publication is approved, change repository visibility, configure the release signing secret and enable the release job. After verifying a complete public release, set `NEXT_PUBLIC_RELEASES_ENABLED=true` and `NEXT_PUBLIC_SOURCE_URL` to the public repository URL, then redeploy the website. Leave the existing HTTPS update-feed URL unchanged.
+
 ## Publishing a version
 
 1. Update `VERSION` and Cargo's package version (including Cargo.lock). Beta versions use `0.1.0-beta.1`.
@@ -14,13 +24,13 @@ The repository's public key belongs to upstream releases. A fork needs a new key
 4. Push to `main`. Checks build the website and optimized native app, exercise a real Sparkle installation against disposable test apps, then upload a CI artifact. If that version has not been published, the release job signs its ZIP and appcast, verifies the archive with CryptoKit and publishes a GitHub Release. A `-beta.N` version is a prerelease.
 5. Verify CI, GitHub download, `/download`, `/appcast.xml` and an actual installed-app update. Release publication occurs only after both app and website checks pass. The upload uses a draft until every required asset is present; an interrupted draft can be retried.
 
-Pushing a tag matching `v<VERSION>` also triggers checks and release. Published versions are immutable in normal CI: another push without a version bump produces a build artifact but does not overwrite a user's existing release. CI-generated tags do not recursively trigger another workflow run. PR jobs cannot access the release secret.
+Once release publication is enabled, pushing a tag matching `v<VERSION>` also triggers checks and release. Published versions are immutable in normal CI: another push without a version bump produces a build artifact but does not overwrite a user's existing release. CI-generated tags do not recursively trigger another workflow run. PR jobs cannot access the release secret.
 
 Before publication, ensure the build number is greater than every existing release's build number. No delta updates are generated in this beta pipeline.
 
 ## Website
 
-Vercel project Root Directory: `site`; framework: Next.js; Node: 22.x; production branch: `main`. Connect the GitHub repository using Vercel's Git integration. A personal/non-commercial website can use Hobby within its limits; open-source status does not waive its usage terms. Public repositories can use standard GitHub-hosted runners without Actions minute charges.
+Vercel project Root Directory: `site`; framework: Next.js; Node: 22.x; production branch: `main`. Connect the GitHub repository using Vercel's Git integration. A personal/non-commercial website can use Hobby within its limits; open-source status does not waive its usage terms. Public repositories can use standard GitHub-hosted runners without Actions minute charges. Private repositories use the account's included Actions allowance, including macOS runner usage; they are not eligible for unlimited free public-repository builds.
 
 `/download` and `/appcast.xml` select the newest published release with all three assets (ZIP, SHA256SUMS, appcast.xml), including betas. Release metadata is cached for up to five minutes. Draft/incomplete releases are excluded. The signed feed is served byte-for-byte; changing its XML invalidates its signature. GitHub failures return a temporary feed error and direct manual-download users to Releases. No photo data passes through this service.
 

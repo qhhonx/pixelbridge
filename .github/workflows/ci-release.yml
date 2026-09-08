@@ -44,7 +44,7 @@ jobs:
           retention-days: 14
           if-no-files-found: error
   release:
-    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    if: vars.ENABLE_RELEASE_PUBLISHING == 'true' && github.event.repository.private == false && github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     needs: [website, app]
     concurrency:
       group: pixelbridge-release

@@ -127,12 +127,12 @@
   "download_description": "从一个小批量开始，搭好属于你的第二条备份路径。",
   "download_action": "获取最新版本",
   "download_metadata": "Apple Silicon · macOS 14+",
-  "download_beta_notice": "免费开源测试版，使用临时签名，未经 Apple 公证。",
+  "download_beta_notice": "免费测试版，使用临时签名，未经 Apple 公证。",
   "download_validation_notice": "适合愿意验证备份结果的个人用户；完整大图库的长期无人值守流程仍待验证。",
   "footer_description": "为 Apple 照片连接另一份备份。",
   "nav_notes": "使用须知",
   "footer_google_policy": "Google 存储政策 ↗",
-  "footer_independent": "独立开源项目，与 Apple 或 Google 无关联。",
+  "footer_independent": "独立项目，与 Apple 或 Google 无关联。",
   "footer_policy_notice": "第三方服务权益与可用性以其官方说明和账户实际状态为准。",
   "language_label": "语言",
   "language_system": "跟随浏览器",
@@ -142,5 +142,7 @@
   "meta_description": "通过 Mac 与第一代 Pixel，将 Apple 照片送往 Google Photos。支持增量传输、动图封装、进度恢复与缓存回收。",
   "download_install_notice": "将 PixelBridge 移到“应用程序”后尝试打开。若 macOS 拦截且你信任下载来源，可前往“系统设置 → 隐私与安全 → 仍要打开”并确认。更新后可能需要重新授予照片权限。",
   "download_install_help": "查看 Apple 的打开说明 ↗",
-  "download_source": "源代码 ↗"
+  "download_source": "源代码 ↗",
+  "nav_beta_status": "测试版进展",
+  "download_pending": "公开测试版正在准备中，完成验证后将开放下载与源代码。"
 }

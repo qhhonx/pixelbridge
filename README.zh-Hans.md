@@ -4,7 +4,9 @@
 
 通过 Mac 将 Apple 照片原件传到 Google Pixel，再由 Google Photos 完成第二份备份。
 
-**首个公开 Beta，免费开源。需要 Apple Silicon Mac、macOS 14 或更高版本。** 安装包使用临时签名，**未经 Apple 公证**。
+**Beta 验证阶段。需要 Apple Silicon Mac、macOS 14 或更高版本。**
+
+源代码仓库目前保持私有，官网对外展示产品。确认验证通过后再开放源码和下载；维护者可使用本地构建或私有 CI 产物。 安装包使用临时签名，**未经 Apple 公证**。
 
 ## 解决什么问题
 
@@ -39,6 +41,6 @@ Sparkle 使用独立的 Ed25519 签名校验更新包，**这不是 Apple 公证
 
 ## 开发与发布
 
-构建与测试见 [English README](README.md#build-from-source)。构建固定依赖版本并校验摘要，不依赖个人电脑的实验目录。推送 main 后自动检查并打包；递增版本号和构建号后推送，会自动发布对应版本并更新下载与升级入口。官网由 Vercel Git 集成部署。
+构建与测试见 [English README](README.md#build-from-source)。构建固定依赖版本并校验摘要，不依赖个人电脑的实验目录。推送 main 后自动检查并打包；公开仓库并明确启用发布后，递增版本号和构建号再推送，才会自动发布对应版本并更新下载与升级入口。官网由 Vercel Git 集成部署。
 
 项目代码采用 MIT 许可证，第三方组件保留各自许可证。详见[第三方声明](THIRD_PARTY_NOTICES.md)、[发布说明](docs/RELEASING.md)、[隐私说明](docs/PRIVACY.md)。项目与 Apple 或 Google 无关联。

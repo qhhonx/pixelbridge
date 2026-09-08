@@ -127,12 +127,12 @@
   "download_description": "Start small and build a second backup path for your photos.",
   "download_action": "Get the latest release",
   "download_metadata": "Apple Silicon · macOS 14+",
-  "download_beta_notice": "Free, open-source beta. Ad hoc signed; not notarized by Apple.",
+  "download_beta_notice": "Free beta. Ad hoc signed; not notarized by Apple.",
   "download_validation_notice": "For people willing to verify their backups. Unattended operation across a full large library still needs validation.",
   "footer_description": "Another copy of your Apple Photos.",
   "nav_notes": "Things to know",
   "footer_google_policy": "Google storage policy ↗",
-  "footer_independent": "An independent open-source project. Not affiliated with Apple or Google.",
+  "footer_independent": "An independent project. Not affiliated with Apple or Google.",
   "footer_policy_notice": "Third-party benefits and availability depend on their official policies and your account.",
   "language_label": "Language",
   "language_system": "Browser default",
@@ -142,5 +142,7 @@
   "meta_description": "Send Apple Photos to Google Photos through your Mac and an original Pixel. Incremental transfers, motion photos, resumable progress and cache cleanup.",
   "download_install_notice": "Move PixelBridge to Applications and try opening it. If macOS blocks this trusted download, go to System Settings → Privacy & Security → Open Anyway, then confirm. You may need to grant Photos access again after updates.",
   "download_install_help": "Apple’s opening instructions ↗",
-  "download_source": "Source code ↗"
+  "download_source": "Source code ↗",
+  "nav_beta_status": "Beta status",
+  "download_pending": "The public beta is being prepared. Downloads and source code will be available after validation is complete."
 }

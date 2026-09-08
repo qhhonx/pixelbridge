@@ -34,7 +34,7 @@
 	<key>NSHumanReadableCopyright</key>
 	<string>Copyright © 2026 PixelBridge contributors</string>
 	<key>NSPhotoLibraryUsageDescription</key>
-	<string>PixelBridge 需要读取照片和 动图 原件，以通过您的 Google Pixel 进行备份。</string>
+	<string>PixelBridge reads original photos and motion photos to back them up through your Google Pixel.</string>
 	<key>SUAutomaticallyUpdate</key>
 	<false/>
 	<key>SUEnableAutomaticChecks</key>

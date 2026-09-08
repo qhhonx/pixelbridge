@@ -4,7 +4,9 @@
 
 A native macOS app that sends Apple Photos originals to a Google Pixel for a second backup in Google Photos.
 
-**First public beta — free and open source. Apple Silicon, macOS 14 or later.**
+**Beta validation phase. Apple Silicon, macOS 14 or later.**
+
+The source repository is currently private. The public website previews the product; public downloads and source access will open after validation. Maintainers can use the local build instructions and private CI artifacts.
 The app uses an ad hoc integrity signature and is **not notarized by Apple**.
 
 ## What it does

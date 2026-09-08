@@ -1,11 +1,11 @@
 'use client';
 
 import Image from 'next/image';
+import { publicReleasesEnabled, publicSourceURL } from '@/lib/distribution';
 import { useCopy, LanguageSwitch } from './language';
 import { ArrowRight, ArrowUpRight, Check, CheckCircle2, Cloud, Download, Folder, HardDrive, Images, Layers3, Monitor, RefreshCw, Settings2, ShieldCheck, Smartphone, Usb, Wifi } from 'lucide-react';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion';
 
-const repository = process.env.NEXT_PUBLIC_REPOSITORY_URL || 'https://github.com/qhhonx/pixelbridge';
 const download = '/download';
 
 
@@ -30,14 +30,14 @@ export default function Home() {
     <header className="header"><nav className="nav wrap" aria-label={t('accessibility_navigation')}>
       <a className="brand" href="#main"><Image unoptimized src="/assets/pixelbridge.png" width="38" height="38" alt="" /><span>PixelBridge</span></a>
       <div className="nav-links"><a href="#features">{t('nav_features')}</a><a href="#how">{t('nav_how')}</a><a href="#guide">{t('nav_guide')}</a><a href="#faq">{t('nav_faq')}</a></div>
-      <LanguageSwitch /><a className="nav-download" href="#download">{t('nav_download')}<ArrowUpRight size={16} /></a>
+      <LanguageSwitch /><a className="nav-download" href="#download">{t(publicReleasesEnabled ? 'nav_download' : 'nav_beta_status')}<ArrowUpRight size={16} /></a>
     </nav></header>
     <main id="main">
       <section className="hero wrap">
         <div className="eyebrow"><span className="status-dot" /> {t('hero_eyebrow')}</div>
         <h1>{t('hero_title_first')}<br /><span>{t('hero_title_second')}</span></h1>
         <p className="hero-copy">{t('hero_description_first')}<br className="desktop-break" />{t('hero_description_second')}</p>
-        <div className="hero-actions"><a className="button primary" href="#download"><Download size={19} /> {t('hero_download')}</a><a className="text-link" href="#how">{t('hero_how')}<ArrowRight size={18} /></a></div>
+        <div className="hero-actions"><a className="button primary" href="#download"><Download size={19} /> {t(publicReleasesEnabled ? 'hero_download' : 'nav_beta_status')}</a><a className="text-link" href="#how">{t('hero_how')}<ArrowRight size={18} /></a></div>
         <p className="compatibility">{t('hero_compatibility')}</p>
         <figure className="app-figure">
           <div className="app-window">
@@ -69,7 +69,7 @@ export default function Home() {
 
       <section className="section wrap faq-section" id="faq"><div><p className="kicker">{t('faq_kicker')}</p><h2>{t('faq_title')}</h2><p>{t('faq_description_first')}<br />{t('faq_description_second')}</p></div><Accordion className="faqs">{faqs.map(([question,answer],i)=><AccordionItem value={`faq-${i}`} key={i}><AccordionTrigger className="faq-question">{question}</AccordionTrigger><AccordionContent className="faq-answer">{answer}</AccordionContent></AccordionItem>)}</Accordion></section>
 
-      <section className="download-section wrap" id="download"><div className="download-content"><Image unoptimized src="/assets/pixelbridge.png" width="72" height="72" alt={t('brand_icon_alt')} /><p className="kicker">{t('download_kicker')}</p><h2>{t('download_title')}</h2><p>{t('download_description')}</p><a className="button primary" href={download} download><Download size={20} /> {t('download_action')}<ArrowUpRight size={18} /></a><span className="download-meta">{t('download_metadata')}</span><p className="beta-note">{t('download_beta_notice')}<br />{t('download_validation_notice')}</p><p className="beta-note">{t('download_install_notice')}</p><p className="beta-note"><a href="https://support.apple.com/en-us/102445" target="_blank" rel="noreferrer">{t('download_install_help')}</a> · <a href={repository} target="_blank" rel="noreferrer">{t('download_source')}</a></p></div></section>
+      <section className="download-section wrap" id="download"><div className="download-content"><Image unoptimized src="/assets/pixelbridge.png" width="72" height="72" alt={t('brand_icon_alt')} /><p className="kicker">{t('download_kicker')}</p><h2>{t('download_title')}</h2><p>{t('download_description')}</p>{publicReleasesEnabled ? <a className="button primary" href={download}><Download size={20} /> {t('download_action')}<ArrowUpRight size={18} /></a> : <p className="beta-note" role="status">{t('download_pending')}</p>}<span className="download-meta">{t('download_metadata')}</span><p className="beta-note">{t('download_beta_notice')}<br />{t('download_validation_notice')}</p><p className="beta-note">{t('download_install_notice')}</p><p className="beta-note"><a href="https://support.apple.com/en-us/102445" target="_blank" rel="noreferrer">{t('download_install_help')}</a>{publicSourceURL ? <> · <a href={publicSourceURL} target="_blank" rel="noreferrer">{t('download_source')}</a></> : null}</p></div></section>
     </main>
     <footer className="footer wrap"><div><a className="brand" href="#main"><Image unoptimized src="/assets/pixelbridge.png" width="30" height="30" alt="" /><span>PixelBridge</span></a><p>{t('footer_description')}</p></div><div className="footer-right"><a href="#guide">{t('nav_guide')}</a><a href="#notes">{t('nav_notes')}</a><a href="https://support.google.com/pixelphone/answer/6220791?hl=zh-Hans" target="_blank" rel="noreferrer">{t('footer_google_policy')}</a><p>{t('footer_independent')}<br />{t('footer_policy_notice')}</p></div></footer>
   </>;
