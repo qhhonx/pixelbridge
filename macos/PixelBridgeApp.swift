@@ -266,8 +266,12 @@ struct ContentView: View {
                 } description: { Text(tr(.photos_connect_description)) } actions: {
                     Button(tr(.photos_connect_action)) { Task { await model.requestPhotos() } }.buttonStyle(ActionStyle(primary: true))
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .padding(.top, 48)
             } else if visiblePhotos.isEmpty {
                 ContentUnavailableView(model.scanning ? tr(.gallery_loading) : tr(.gallery_empty), systemImage: model.scanning ? "photo.stack" : "photo", description: Text(model.scanning ? tr(.gallery_loading_description) : tr(.gallery_empty_description)))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .padding(.top, 48)
             } else {
                 PhotoGrid(items: visiblePhotos, revision: model.galleryRevision, filter: kindFilter,
                     tileSize: tileSize, language: L10n.language, phases: model.phases,
@@ -283,7 +287,7 @@ struct ContentView: View {
                 }.font(.system(size: 11)).foregroundStyle(Palette.muted)
                     .padding(.horizontal, Layout.contentInset).padding(.vertical, 10)
             }
-        }
+        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
     private var overview: some View {
         ScrollView {
@@ -438,9 +442,13 @@ struct ContentView: View {
             }
             if model.rows.isEmpty {
                 ContentUnavailableView(tr(.tasks_empty), systemImage: "arrow.triangle.2.circlepath", description: Text(tr(.tasks_empty_description)))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .padding(.top, 48)
             } else if visibleRows.isEmpty {
                 ContentUnavailableView(tr(.tasks_no_matches), systemImage: "line.3.horizontal.decrease.circle",
                     description: Text(tr(.tasks_no_matches_description)))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .padding(.top, 48)
             } else {
                 Table(visibleRows, selection: $selectedTask) {
                     TableColumn(tr(.tasks_column_file)) { row in
@@ -483,7 +491,8 @@ struct ContentView: View {
             }
             Label(tr(.tasks_cloud_notice), systemImage: "info.circle")
                 .font(.system(size: 12)).foregroundStyle(Palette.muted)
-        }.padding(30)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(30)
             .onChange(of: taskStatusFilter) { _, _ in selectedTask = nil }
             .onChange(of: taskKindFilter) { _, _ in selectedTask = nil }
     }

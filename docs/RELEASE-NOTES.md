@@ -1,12 +1,10 @@
-PixelBridge 0.1.0-beta.2 — task filters and automatic recovery.
+PixelBridge 0.1.0-beta.3 — stable empty-state layouts.
 
-- Filter transfers by status and media type together, with matching counts and clear-filter controls.
-- Starting or resuming automatic backup requeues existing failures immediately, including after an app restart.
-- Temperature, storage and recognized network/connection interruptions preserve progress and recheck after 60 seconds while automatic backup is enabled.
-- Other failed items retry automatically with a 30-second to 5-minute backoff. The scheduler wakes when a retry is due instead of waiting a full scan interval.
-- Explicit pause remains paused. Already delivered files stay excluded from retries.
+- Keep the photo library heading and transfer task filters anchored at the top when a list is empty.
+- Place permission, loading, empty-library and no-match messages within the content area below the heading.
+- Keep the transfer cloud-backup notice at the bottom, so changing filters does not move the entire page.
 
-Known limitation: underlying PhotoKit errors do not always identify a network failure. Unclassified errors use the bounded per-item retry policy. Space limits still require enough available space; this release does not delete Pixel photos.
+Includes the task filters and automatic recovery improvements from beta.2.
 
 Free macOS beta for Apple Silicon, macOS 14+.
 
