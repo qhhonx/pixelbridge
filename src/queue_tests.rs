@@ -267,3 +267,41 @@ fn missing_corrupt_and_future_databases_never_reset_progress() {
     drop(queue);
     assert!(Queue::open(&future.0).is_err());
 }
+
+#[test]
+fn measured_size_survives_transitions_reopen_and_additive_metadata_upgrade() {
+    let fixture = Fixture::new();
+    {
+        let queue = Queue::open(&fixture.0).unwrap();
+        queue.add("asset", "photo.jpg").unwrap();
+        assert_eq!(queue.item("asset").unwrap().unwrap().bytes, None);
+        // Simulate a beta.3 database with no optional metadata table.
+        queue.db.execute_batch("DROP TABLE job_details").unwrap();
+    }
+    {
+        let queue = Queue::open(&fixture.0).unwrap();
+        assert_eq!(
+            queue.item("asset").unwrap().unwrap().phase,
+            QueuePhase::Discovered
+        );
+        let events = event_count(&queue);
+        queue.set_size("asset", 123456789).unwrap();
+        assert_eq!(event_count(&queue), events);
+        assert!(queue.set_size("missing", 1).is_err());
+        assert!(queue.set_size("asset", -1).is_err());
+        queue
+            .transition("asset", QueuePhase::Exporting, None, None, None)
+            .unwrap();
+        queue
+            .transition("asset", QueuePhase::Prepared, Some("proof"), None, None)
+            .unwrap();
+        queue
+            .transition("asset", QueuePhase::Transferred, None, Some("remote"), None)
+            .unwrap();
+    }
+    let queue = Queue::open(&fixture.0).unwrap();
+    let item = queue.item("asset").unwrap().unwrap();
+    assert_eq!(item.bytes, Some(123456789));
+    assert_eq!(item.phase, QueuePhase::Transferred);
+    assert_eq!(item.sha256.as_deref(), Some("proof"));
+}

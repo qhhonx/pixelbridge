@@ -243,6 +243,16 @@ enum TextKey: String, CaseIterable {
     case tasks_clear_filters
     case tasks_no_matches
     case tasks_no_matches_description
+    case tasks_active_description
+    case tasks_column_size
+    case tasks_size_unknown
+    case tasks_size_help
+    case tasks_stage_progress_help
+    case tasks_checking
+    case tasks_preparing
+    case tasks_verifying
+    case settings_concurrency
+    case settings_concurrency_description
     case tasks_summary
     case unit_items
     case unit_minutes

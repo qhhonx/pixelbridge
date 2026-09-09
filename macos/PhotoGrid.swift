@@ -59,6 +59,17 @@ enum ThumbnailStore {
     }
 }
 
+// Owned by the window, not the representable, so navigation can recreate the grid.
+struct GalleryBookmark {
+    let assetID: String
+    let index: Int
+    let offset: CGFloat
+    let loaded: Int
+}
+@MainActor final class GalleryPosition: ObservableObject {
+    var bookmarks: [String: GalleryBookmark] = [:]
+}
+
 // NSCollectionView reuses visible cells; the full Photos metadata index never
 // becomes tens of thousands of SwiftUI views or retained decoded images.
 struct PhotoGrid: NSViewRepresentable {
@@ -70,6 +81,8 @@ struct PhotoGrid: NSViewRepresentable {
     let phases: [String: String]
     let retryIDs: Set<String>
     let activeID: String?
+    var position: GalleryPosition? = nil
+    var activeIDs: Set<String> = []
     var showLabels: Bool = false
     let onLoaded: (Int) -> Void
 
@@ -87,12 +100,18 @@ struct PhotoGrid: NSViewRepresentable {
         context.coordinator.collection = collection; context.coordinator.scroll = scroll
         scroll.contentView.postsBoundsChangedNotifications = true
         context.coordinator.observer = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: .main) { [weak coordinator = context.coordinator] _ in
-            Task { @MainActor in coordinator?.loadNearEnd() }
+            Task { @MainActor in
+                coordinator?.savePosition()
+                coordinator?.loadNearEnd()
+            }
         }
         return scroll
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) { context.coordinator.update(self) }
     static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        coordinator.savePosition()
+        coordinator.dismantled = true
+        coordinator.restoreTask?.cancel()
         if let observer = coordinator.observer { NotificationCenter.default.removeObserver(observer) }
         for case let cell as PhotoCell in coordinator.collection?.visibleItems() ?? [] { cell.cancel() }
     }
@@ -106,37 +125,84 @@ struct PhotoGrid: NSViewRepresentable {
         var revision = -1
         var filter = ""
         var reporting = false
+        var dismantled = false
+        var restoring = false
+        var restoreTask: Task<Void, Never>?
         let pageSize = 200
         func update(_ value: PhotoGrid) {
             guard let collection else { return }
-            let changed = revision != value.revision || filter != value.filter
+            let layoutChanged = (collection.collectionViewLayout as? PhotoFlowLayout)?.minimumTile != value.tileSize
+            let changed = revision != value.revision || filter != value.filter || layoutChanged
             let appearanceChanged = state?.language != value.language || state?.showLabels != value.showLabels
-            let oldCount = state?.items.count ?? 0
-            let anchor = collection.indexPathsForVisibleItems().sorted().first
-            let anchorID = anchor.flatMap { path in path.item < oldCount ? state?.items[path.item].id : nil }
-            let oldOrigin = scroll?.contentView.bounds.origin ?? .zero
-            let newFilter = filter != value.filter
+            if changed { savePosition() }
+            let localBookmark = changed && filter == value.filter ? bookmark() : nil
+            let saved = value.position?.bookmarks[value.filter] ?? localBookmark
             state = value
-            if let layout = collection.collectionViewLayout as? PhotoFlowLayout, layout.minimumTile != value.tileSize {
+            if let layout = collection.collectionViewLayout as? PhotoFlowLayout, layoutChanged {
                 layout.minimumTile = value.tileSize; layout.invalidateLayout()
             }
             if changed {
                 if revision != value.revision { ThumbnailStore.invalidate() }
                 revision = value.revision; filter = value.filter
-                loaded = min(value.items.count, newFilter ? pageSize : max(pageSize, loaded))
+                let anchorIndex = saved.flatMap { saved in
+                    value.items.firstIndex(where: { $0.id == saved.assetID })
+                        ?? (value.items.isEmpty ? nil : min(saved.index, value.items.count - 1))
+                }
+                loaded = min(value.items.count, max(pageSize, saved?.loaded ?? pageSize, (anchorIndex ?? 0) + pageSize))
+                restoring = true
+                restoreTask?.cancel()
                 collection.reloadData()
-                if newFilter { scroll?.contentView.scroll(to: .zero) }
-                else if let anchorID, let index = value.items.firstIndex(where: { $0.id == anchorID }), index < loaded, let attributes = collection.collectionViewLayout?.layoutAttributesForItem(at: IndexPath(item: index, section: 0)) {
-                    scroll?.contentView.scroll(to: NSPoint(x: oldOrigin.x, y: attributes.frame.minY))
+                guard saved != nil else {
+                    scroll?.contentView.scroll(to: .zero)
+                    restoring = false
+                    reportLoaded()
+                    return
+                }
+                restoreTask = Task { @MainActor [weak self] in
+                    // SwiftUI must first assign the recreated scroll view its window size.
+                    await Task.yield()
+                    guard !Task.isCancelled, let self, !self.dismantled,
+                          let collection = self.collection, let scroll = self.scroll else { return }
+                    scroll.layoutSubtreeIfNeeded(); collection.layoutSubtreeIfNeeded()
+                    var targetY: CGFloat = 0
+                    if let anchorIndex,
+                       let attributes = collection.collectionViewLayout?.layoutAttributesForItem(at: IndexPath(item: anchorIndex, section: 0)) {
+                        targetY = attributes.frame.minY + min(max(0, saved?.offset ?? 0), max(0, attributes.frame.height - 1))
+                    }
+                    let height = collection.collectionViewLayout?.collectionViewContentSize.height ?? 0
+                    scroll.contentView.scroll(to: NSPoint(x: 0, y: min(max(0, targetY), max(0, height - scroll.contentSize.height))))
+                    scroll.reflectScrolledClipView(scroll.contentView)
+                    self.restoring = false
+                    self.savePosition()
+                    self.reportLoaded()
                 }
                 reportLoaded()
             } else {
                 // Backup progress only updates visible badges. No grid reload,
                 // layout pass, or thumbnail request for each queue transition.
                 for case let cell as PhotoCell in collection.visibleItems() {
-                    cell.updateStatus(phase: value.phases[cell.assetID], retry: value.retryIDs.contains(cell.assetID), active: value.activeID == cell.assetID, showLabels: value.showLabels, appearanceChanged: appearanceChanged)
+                    cell.updateStatus(phase: value.phases[cell.assetID], retry: value.retryIDs.contains(cell.assetID), active: value.activeID == cell.assetID || value.activeIDs.contains(cell.assetID), showLabels: value.showLabels, appearanceChanged: appearanceChanged)
                 }
             }
+        }
+        func bookmark() -> GalleryBookmark? {
+            guard !restoring, !dismantled, let state, let collection, let scroll else { return nil }
+            let bounds = scroll.contentView.bounds
+            // Visible-item callbacks can lag a programmatic scroll by one frame.
+            // Query the layout geometry to avoid bookmarking a recycled/offscreen cell.
+            let visible = (collection.collectionViewLayout?.layoutAttributesForElements(in: bounds) ?? [])
+                .compactMap { attributes -> (IndexPath, NSRect)? in
+                    guard attributes.representedElementCategory == .item,
+                          let path = attributes.indexPath, attributes.frame.intersects(bounds) else { return nil }
+                    return (path, attributes.frame)
+                }.sorted { $0.0 < $1.0 }.first
+            guard let (path, frame) = visible, path.item < state.items.count else { return nil }
+            return GalleryBookmark(assetID: state.items[path.item].id, index: path.item,
+                offset: bounds.minY - frame.minY, loaded: loaded)
+        }
+        func savePosition() {
+            guard let saved = bookmark(), let state else { return }
+            state.position?.bookmarks[state.filter] = saved
         }
         func reportLoaded() {
             guard !reporting else { return }; reporting = true
@@ -146,7 +212,7 @@ struct PhotoGrid: NSViewRepresentable {
             }
         }
         func loadNearEnd() {
-            guard let collection, let scroll, let state, loaded < state.items.count,
+            guard !restoring, !dismantled, let collection, let scroll, let state, loaded < state.items.count,
                   scroll.contentView.bounds.height > 0,
                   scroll.contentView.bounds.maxY + 800 >= (collection.collectionViewLayout?.collectionViewContentSize.height ?? .infinity) else { return }
             let previous = loaded; loaded = min(state.items.count, loaded + pageSize)
@@ -161,7 +227,7 @@ struct PhotoGrid: NSViewRepresentable {
             let cell = collectionView.makeItem(withIdentifier: PhotoCell.identifier, for: indexPath) as! PhotoCell
             if let state, indexPath.item < state.items.count {
                 let item = state.items[indexPath.item]
-                cell.configure(item, pixels: state.tileSize * (collectionView.window?.backingScaleFactor ?? 2), phase: state.phases[item.id], retry: state.retryIDs.contains(item.id), active: state.activeID == item.id, showLabels: state.showLabels)
+                cell.configure(item, pixels: state.tileSize * (collectionView.window?.backingScaleFactor ?? 2), phase: state.phases[item.id], retry: state.retryIDs.contains(item.id), active: state.activeID == item.id || state.activeIDs.contains(item.id), showLabels: state.showLabels)
             }
             return cell
         }

@@ -11,6 +11,7 @@ struct QueueRow: Decodable, Identifiable {
     let sha256: String?
     let remote: String?
     let message: String?
+    var bytes: Int64? = nil
     var id: String { asset_id }
     var delivered: Bool { ["transferred", "backup_seen", "motion_verified"].contains(phase) }
     var label: String {
@@ -93,7 +94,7 @@ private func terminateProcessTree(_ process: Process) {
     if process.isRunning { kill(root, SIGKILL) }
 }
 
-func processOutput(_ executable: URL, _ arguments: [String], timeout: Double = 1800) async throws -> String {
+func processOutput(_ executable: URL, _ arguments: [String], timeout: Double = 1800, onProgress: (@Sendable (String) -> Void)? = nil) async throws -> String {
     let cancellation = CancellationFlag()
     return try await withTaskCancellationHandler {
         try Task.checkCancellation()
@@ -113,15 +114,31 @@ func processOutput(_ executable: URL, _ arguments: [String], timeout: Double = 1
                     environment["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
                     p.environment = environment
                     try p.run()
+                    let progressReader = onProgress == nil ? nil : try FileHandle(forReadingFrom: logURL)
+                    defer { try? progressReader?.close() }
+                    var progressBuffer = ""
+                    var lastProgressRead = Date.distantPast
+                    func reportProgress() {
+                        guard let progressReader, let data = try? progressReader.readToEnd(), !data.isEmpty else { return }
+                        progressBuffer += String(decoding: data, as: UTF8.self)
+                        while let end = progressBuffer.firstIndex(of: "\n") {
+                            let line = String(progressBuffer[..<end])
+                            progressBuffer.removeSubrange(...end)
+                            if line.hasPrefix("progress: ") { onProgress?(String(line.dropFirst(10))) }
+                        }
+                        if progressBuffer.count > 4096 { progressBuffer = String(progressBuffer.suffix(4096)) }
+                    }
                     let deadline = Date().addingTimeInterval(timeout)
                     var timedOut = false, cancelled = false
                     while p.isRunning {
                         cancelled = cancellation.isCancelled
                         timedOut = Date() >= deadline
                         if cancelled || timedOut { terminateProcessTree(p); break }
+                        if Date().timeIntervalSince(lastProgressRead) >= 0.25 { reportProgress(); lastProgressRead = Date() }
                         Thread.sleep(forTimeInterval: 0.05)
                     }
                     p.waitUntilExit()
+                    reportProgress()
                     if cancelled { throw CancellationError() }
                     if timedOut { throw fail(Message(.error_timeout)) }
                     try handle.synchronize()
@@ -254,12 +271,12 @@ final class BatchLease {
 }
 
 enum NumericPreference: String, CaseIterable {
-    case intervalMinutes, macReserveGB, pixelReserveGB, maxTemperatureC
+    case intervalMinutes, macReserveGB, pixelReserveGB, maxTemperatureC, concurrentTasks
     var fallback: Int {
-        switch self { case .intervalMinutes: return 5; case .macReserveGB: return 8; case .pixelReserveGB: return 4; case .maxTemperatureC: return 40 }
+        switch self { case .concurrentTasks: return 1; case .intervalMinutes: return 5; case .macReserveGB: return 8; case .pixelReserveGB: return 4; case .maxTemperatureC: return 40 }
     }
     var range: ClosedRange<Int> {
-        switch self { case .intervalMinutes: return 1...60; case .macReserveGB: return 2...100; case .pixelReserveGB: return 1...32; case .maxTemperatureC: return 35...45 }
+        switch self { case .concurrentTasks: return 1...3; case .intervalMinutes: return 1...60; case .macReserveGB: return 2...100; case .pixelReserveGB: return 1...32; case .maxTemperatureC: return 35...45 }
     }
     func clamp(_ value: Int) -> Int { min(range.upperBound, max(range.lowerBound, value)) }
     func read(_ defaults: UserDefaults = .standard) -> Int {
@@ -285,7 +302,7 @@ func isTemporaryInterruption(_ error: Error, depth: Int = 0) -> Bool {
     guard depth < 8 else { return false }
     if let failure = error as? BridgeFailure,
        [.error_pixel_temperature, .error_pixel_storage, .error_pixel_disconnected,
-        .error_pixel_waiting, .error_cache_budget, .error_mac_storage,
+        .error_pixel_waiting, .error_pixel_generation, .error_cache_budget, .error_mac_storage,
         .error_download_budget, .error_icloud_timeout, .error_timeout].contains(failure.message.key) { return true }
     let ns = error as NSError
     if ns.domain == NSURLErrorDomain { return true }
@@ -326,9 +343,9 @@ enum TaskStatusFilter: String, CaseIterable {
         case .delivered: return .metric_delivered
         }
     }
-    static func status(of row: QueueRow, requested: Set<String>, activeID: String?) -> Self {
+    static func status(of row: QueueRow, requested: Set<String>, activeID: String?, activeIDs: Set<String> = []) -> Self {
         if row.delivered { return .delivered }
-        if activeID == row.id { return .processing }
+        if activeID == row.id || activeIDs.contains(row.id) { return .processing }
         if requested.contains(row.id) { return .queued }
         if row.phase == "failed" { return .failed }
         return .waiting
@@ -346,9 +363,70 @@ enum TaskStatusFilter: String, CaseIterable {
 }
 
 func filteredTasks(_ rows: [QueueRow], status: TaskStatusFilter, kind: String,
-                   kinds: [String: String], requested: Set<String>, activeID: String?) -> [QueueRow] {
+                   kinds: [String: String], requested: Set<String>, activeID: String?, activeIDs: Set<String> = []) -> [QueueRow] {
     rows.filter { row in
-        (status == .all || TaskStatusFilter.status(of: row, requested: requested, activeID: activeID) == status)
+        (status == .all || TaskStatusFilter.status(of: row, requested: requested, activeID: activeID, activeIDs: activeIDs) == status)
             && (kind == "all" || (kinds[row.id] ?? "unknown") == kind)
+    }
+}
+
+struct PreparedDelivery {
+    let item: LibraryItem
+    let file: URL
+    let hash: String
+    let bytes: Int64
+}
+enum TaskStage: Int {
+    case waiting, exporting, preparing, transferring, verifying, checking
+    var step: Int { self == .checking ? 2 : rawValue }
+    var title: TextKey {
+        switch self {
+        case .checking: return .tasks_checking
+        case .waiting: return .queue_discovered
+        case .exporting: return .queue_exporting
+        case .preparing: return .tasks_preparing
+        case .transferring: return .status_transferring
+        case .verifying: return .tasks_verifying
+        }
+    }
+}
+struct ActiveTransfer {
+    let attemptID = UUID()
+    let item: LibraryItem
+    var filename: String
+    var stage: TaskStage = .waiting
+    let started = Date()
+}
+
+// Serialize memory-heavy preparation; cancellation removes waiters immediately.
+@MainActor final class PreparationGate {
+    private var occupied = false
+    private var waiters: [(UUID, CheckedContinuation<Void, Error>)] = []
+    func withPermit<T>(_ operation: () async throws -> T) async throws -> T {
+        try await acquire()
+        defer { release() }
+        try Task.checkCancellation()
+        return try await operation()
+    }
+    private func acquire() async throws {
+        try Task.checkCancellation()
+        if !occupied { occupied = true; return }
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                if Task.isCancelled { continuation.resume(throwing: CancellationError()) }
+                else { waiters.append((id, continuation)) }
+            }
+        } onCancel: {
+            Task { @MainActor in
+                if let index = self.waiters.firstIndex(where: { $0.0 == id }) {
+                    self.waiters.remove(at: index).1.resume(throwing: CancellationError())
+                }
+            }
+        }
+    }
+    private func release() {
+        if waiters.isEmpty { occupied = false }
+        else { waiters.removeFirst().1.resume() }
     }
 }

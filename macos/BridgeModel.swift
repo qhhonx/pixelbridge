@@ -31,6 +31,16 @@ final class BridgeModel: ObservableObject {
     @Published var installing = false
     @Published var currentName = ""
     @Published var currentItem: LibraryItem?
+    @Published private(set) var activeTransfers: [String: ActiveTransfer] = [:]
+    var activeIDs: Set<String> { Set(activeTransfers.keys) }
+    private let preparationGate = PreparationGate()
+    private var pixelReservations: [String: Int64] = [:]
+    @Published var concurrentTasks = NumericPreference.concurrentTasks.read() {
+        didSet {
+            let bounded = NumericPreference.concurrentTasks.save(concurrentTasks)
+            if concurrentTasks != bounded { concurrentTasks = bounded }
+        }
+    }
     @Published var completed = 0
     @Published var batchTotal = 0
     @Published var cacheBytes: Int64 = 0
@@ -93,6 +103,9 @@ final class BridgeModel: ObservableObject {
     var testPrepareBatch: (() async throws -> Void)?
     var testGuardDevice: (() async throws -> Void)?
     var testProcessItem: ((LibraryItem, QueueRow?) async throws -> Void)?
+    var testPrepareItem: ((LibraryItem, QueueRow?) async throws -> PreparedDelivery)?
+    var testDeliverItem: ((PreparedDelivery) async throws -> Void)?
+    var testReservedPixelBytes: Int64 { pixelReservations.values.reduce(0, +) }
     #endif
     private var retries: [String: RetryInfo] = [:]
     private let state: URL
@@ -313,9 +326,10 @@ final class BridgeModel: ObservableObject {
         saveRetries()
     }
     func taskStatus(_ row: QueueRow) -> TaskStatusFilter {
-        TaskStatusFilter.status(of: row, requested: pendingRetryIDs, activeID: busy ? currentItem?.id : nil)
+        TaskStatusFilter.status(of: row, requested: pendingRetryIDs, activeID: busy ? currentItem?.id : nil, activeIDs: activeIDs)
     }
     func taskLabel(_ row: QueueRow) -> String {
+        if let active = activeTransfers[row.id], !row.delivered { return tr(active.stage.title) }
         switch taskStatus(row) {
         case .processing: return row.phase == "failed" ? tr(.gallery_processing) : row.label
         case .delivered: return row.label
@@ -360,6 +374,7 @@ final class BridgeModel: ObservableObject {
         defer {
             ProcessInfo.processInfo.endActivity(activity)
             busy = false; currentName = ""; currentItem = nil
+            activeTransfers.removeAll(); pixelReservations.removeAll()
             if autoRunning {
                 let available = Set(library.map(\.id)).subtracting(rows.filter(\.delivered).map(\.id))
                 nextRun = nextBackupCheck(now: Date(), interval: Double(intervalMinutes * 60),
@@ -378,35 +393,21 @@ final class BridgeModel: ObservableObject {
                 requested: pendingRetryIDs, limit: batchLimit, now: Date())
             batchTotal = candidates.count
             var failures = 0
-            for item in candidates {
-                try Task.checkCancellation()
-                try await guardDevice()
-                let prior = byID[item.id]
-                currentName = item.name
-                currentItem = item
-                pendingRetryIDs.remove(item.id)
-                madeAttempt = true
-                do {
-                    try await process(item, prior: prior)
-                    retries[item.id] = nil; completed += 1
-                    log(tr(.log_delivered, String(describing: item.name)))
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch {
-                    if Task.isCancelled { throw CancellationError() }
-                    if isTemporaryInterruption(error) {
-                        retries[item.id] = nil
-                        saveRetries()
-                        // Keep exporting/prepared progress, including its verified hash.
-                        throw error
+            madeAttempt = !candidates.isEmpty
+            try await withThrowingTaskGroup(of: Bool.self) { group in
+                var iterator = candidates.makeIterator()
+                for _ in 0..<min(concurrentTasks, candidates.count) {
+                    if let item = iterator.next() {
+                        group.addTask { try await self.executeItem(item, prior: byID[item.id]) }
                     }
-                    failures += 1
-                    retries[item.id] = nextRetry(previous: retries[item.id], now: Date())
-                    if prior == nil { _ = try? await invoke(["queue-add", "--state-dir", state.path, "--asset-id", item.id, "--filename", currentName]) }
-                    try? await transition(item.id, "failed", message: error.localizedDescription)
-                    log("\(item.name)：\(error.localizedDescription)")
                 }
-                saveRetries(); cacheBytes = await measuredCacheBytes()
+                while let succeeded = try await group.next() {
+                    if !succeeded { failures += 1 }
+                    try Task.checkCancellation()
+                    if let item = iterator.next() {
+                        group.addTask { try await self.executeItem(item, prior: byID[item.id]) }
+                    }
+                }
             }
             cacheBytes = await measuredCacheBytes()
             status = stopRequested ? Message(.status_paused) : (autoRunning ? Message(.status_automatic) : Message(.status_batch_finished))
@@ -419,6 +420,61 @@ final class BridgeModel: ObservableObject {
             status = stopRequested ? Message(.status_paused) : Message(.status_waiting)
             detail = stopRequested ? Message(.backup_paused) : Message(error: error)
             if !stopRequested { log(error.localizedDescription) }
+        }
+    }
+    private func executeItem(_ item: LibraryItem, prior: QueueRow?) async throws -> Bool {
+        try Task.checkCancellation()
+        activeTransfers[item.id] = ActiveTransfer(item: item, filename: item.name)
+        updateFocus()
+        pendingRetryIDs.remove(item.id)
+        defer {
+            activeTransfers[item.id] = nil
+            pixelReservations[item.id] = nil
+            updateFocus()
+        }
+        do {
+            #if PIXELBRIDGE_TESTING
+            if let testProcessItem {
+                try await guardDevice()
+                try await testProcessItem(item, prior)
+            } else {
+                try await process(item, prior: prior)
+            }
+            #else
+            try await process(item, prior: prior)
+            #endif
+            retries[item.id] = nil; completed += 1
+            saveRetries()
+            log(tr(.log_delivered, activeTransfers[item.id]?.filename ?? item.name))
+            return true
+        } catch {
+            if Task.isCancelled || error is CancellationError { throw CancellationError() }
+            if isTemporaryInterruption(error) {
+                retries[item.id] = nil; saveRetries()
+                throw error
+            }
+            retries[item.id] = nextRetry(previous: retries[item.id], now: Date())
+            let name = activeTransfers[item.id]?.filename ?? item.name
+            if prior == nil { _ = try? await invoke(["queue-add", "--state-dir", state.path, "--asset-id", item.id, "--filename", name]) }
+            try? await transition(item.id, "failed", message: error.localizedDescription)
+            saveRetries()
+            log("\(name): \(error.localizedDescription)")
+            return false
+        }
+    }
+    private func updateStage(_ id: String, _ stage: TaskStage, filename: String? = nil) {
+        guard activeTransfers[id] != nil else { return }
+        activeTransfers[id]?.stage = stage
+        if let filename { activeTransfers[id]?.filename = filename }
+        updateFocus()
+    }
+    private func updateFocus() {
+        let focus = currentItem.flatMap { activeTransfers[$0.id] }
+            ?? activeTransfers.values.min { $0.started < $1.started }
+        currentItem = focus?.item; currentName = focus?.filename ?? ""
+        if let focus {
+            status = Message(focus.stage == .waiting ? .status_automatic : focus.stage.title)
+            detail = .raw(focus.filename)
         }
     }
     private func prepareBatch() async throws {
@@ -441,7 +497,7 @@ final class BridgeModel: ObservableObject {
         guard !selectedDevice.isEmpty, !adbPath.isEmpty else { throw fail(Message(.error_pixel_waiting)) }
         let product = try await processOutput(URL(fileURLWithPath: adbPath), ["-s", selectedDevice, "shell", "getprop", "ro.product.device"], timeout: 30).trimmingCharacters(in: .whitespacesAndNewlines)
         guard ["marlin", "sailfish"].contains(product) else { throw fail(Message(.error_pixel_generation)) }
-        let minimumGB = Double(pixelReserveGB) + Double(extraBytes) / 1_000_000_000
+        let minimumGB = Double(pixelReserveGB) + Double(extraBytes + pixelReservations.values.reduce(0, +)) / 1_000_000_000
         do {
             _ = try await invoke(["device-status", "--adb", adbPath, "--device", selectedDevice, "--max-temperature-c", String(maxTemperatureC), "--min-free-gb", String(minimumGB)])
         } catch {
@@ -462,16 +518,24 @@ final class BridgeModel: ObservableObject {
         guard diskFree(bridgeRoot) > Int64(macReserveGB) * 1_000_000_000 + cacheExtraBytes else { throw fail(Message(.error_mac_storage, String(describing: macReserveGB))) }
     }
     private func process(_ item: LibraryItem, prior: QueueRow?) async throws {
+        let delivery = try await preparationGate.withPermit {
+            try await self.guardDevice()
+            return try await self.prepareItem(item, prior: prior)
+        }
+        try await deliver(delivery)
+    }
+    private func prepareItem(_ item: LibraryItem, prior: QueueRow?) async throws -> PreparedDelivery {
         try Task.checkCancellation()
+        updateStage(item.id, .exporting)
         #if PIXELBRIDGE_TESTING
-        if let testProcessItem { try await testProcessItem(item, prior); return }
+        if let testPrepareItem { return try await testPrepareItem(item, prior) }
         #endif
         let assetResult = PHAsset.fetchAssets(withLocalIdentifiers: [item.id], options: nil)
         guard let asset = assetResult.firstObject else { throw fail(Message(.error_asset_missing)) }
         let resources = PHAssetResource.assetResources(for: asset)
         let videoAsset = asset.mediaType == .video
         guard let primary = resources.first(where: { $0.type == (videoAsset ? .video : .photo) }) else { throw fail(Message(.error_original_missing)) }
-        currentName = primary.originalFilename
+        updateStage(item.id, .exporting, filename: primary.originalFilename)
         if prior == nil { _ = try await invoke(["queue-add", "--state-dir", state.path, "--asset-id", item.id, "--filename", primary.originalFilename]) }
         let live = asset.mediaSubtypes.contains(.photoLive)
         let ext = (primary.originalFilename as NSString).pathExtension.lowercased()
@@ -494,7 +558,7 @@ final class BridgeModel: ObservableObject {
             // A prepared state whose file disappeared needs an explicit failed/retry transition.
             if prior?.phase == "prepared" { try await transition(item.id, "failed", message: tr(.queue_prepared_missing)) }
             try await transition(item.id, "exporting")
-            status = Message(.status_exporting); detail = .raw(item.name)
+            updateStage(item.id, .exporting)
             try await exportOriginal(primary, to: source, budget: await availableBudget())
             if live {
                 guard let motion = resources.first(where: { $0.type == .pairedVideo }) else { throw fail(Message(.error_motion_missing)) }
@@ -503,7 +567,7 @@ final class BridgeModel: ObservableObject {
                 let imageSize = Int64((try source.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0)
                 let videoSize = Int64((try movie.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0)
                 try await guardDevice(extraBytes: imageSize + videoSize * 8, cacheExtraBytes: imageSize + videoSize * 8)
-                status = Message(.status_motion_preparing)
+                updateStage(item.id, .preparing)
                 let text = try await invoke(["prepare", "--image", source.path, "--video", movie.path, "--output", prepared.path, "--exiftool", exiftool.path, "--force"])
                 hash = value("sha256", text)
             } else { hash = try await hashFile(prepared) }
@@ -520,9 +584,30 @@ final class BridgeModel: ObservableObject {
             }
             if !FileManager.default.fileExists(atPath: delivery.path) { try FileManager.default.linkItem(at: source, to: delivery) }
         }
-        try await guardDevice(extraBytes: size)
-        status = Message(.status_transferring)
-        let output = try await invoke(["push", "--file", delivery.path, "--adb", adbPath, "--device", selectedDevice])
+        let output = try await invoke(["queue-set-size", "--state-dir", state.path, "--asset-id", item.id, "--bytes", String(size)])
+        updateQueueRow(try JSONDecoder().decode(QueueRow.self, from: Data(output.utf8)))
+        return PreparedDelivery(item: item, file: delivery, hash: hash, bytes: size)
+    }
+    private func deliver(_ delivery: PreparedDelivery) async throws {
+        let item = delivery.item, hash = delivery.hash
+        // Reserve before the first await: other workers include this file in their guard.
+        pixelReservations[item.id] = delivery.bytes
+        defer { pixelReservations[item.id] = nil }
+        try await guardDevice()
+        updateStage(item.id, .checking)
+        #if PIXELBRIDGE_TESTING
+        if let testDeliverItem { try await testDeliverItem(delivery); return }
+        #endif
+        let attemptID = activeTransfers[item.id]?.attemptID
+        let output = try await processOutput(core,
+            ["push", "--file", delivery.file.path, "--adb", adbPath, "--device", selectedDevice],
+            onProgress: { [weak self] value in
+                Task { @MainActor in
+                    guard let self, self.activeTransfers[item.id]?.attemptID == attemptID else { return }
+                    let stages: [String: TaskStage] = ["checking": .checking, "transferring": .transferring, "verifying": .verifying]
+                    if let stage = stages[value] { self.updateStage(item.id, stage) }
+                }
+            })
         guard value("sha256", output) == hash, let remote = value("remote", output) else { throw fail(Message(.error_transfer_verification)) }
         try await transition(item.id, "transferred", hash: hash, remote: remote)
         // A cleanup error must never downgrade a durable, verified delivery to failed.
@@ -586,7 +671,9 @@ final class BridgeModel: ObservableObject {
         var args = ["queue-transition", "--state-dir", state.path, "--asset-id", id, "--phase", phase]
         if let hash { args += ["--sha256", hash] }; if let remote { args += ["--remote", remote] }; if let message { args += ["--message", message] }
         let output = try await invoke(args)
-        let row = try JSONDecoder().decode(QueueRow.self, from: Data(output.utf8))
+        updateQueueRow(try JSONDecoder().decode(QueueRow.self, from: Data(output.utf8)))
+    }
+    private func updateQueueRow(_ row: QueueRow) {
         if let index = rows.firstIndex(where: { $0.id == row.id }) { rows.remove(at: index) }
         rows.insert(row, at: 0)
     }

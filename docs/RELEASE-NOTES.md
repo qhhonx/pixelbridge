@@ -1,10 +1,13 @@
-PixelBridge 0.1.0-beta.3 — stable empty-state layouts.
+PixelBridge 0.1.0-beta.4 — file sizes, task progress and bounded concurrency.
 
-- Keep the photo library heading and transfer task filters anchored at the top when a list is empty.
-- Place permission, loading, empty-library and no-match messages within the content area below the heading.
-- Keep the transfer cloud-backup notice at the bottom, so changing filters does not move the entire page.
+- Restore photo-library scroll positions when returning from another page, with separate positions per media filter and photo-identity anchors across new arrivals.
+- Show measured delivery sizes in the task list. Sizes include the motion track and remain in SQLite after Mac cache cleanup. Older tasks without size records display a dash.
+- Show per-task download, preparation, transfer and verification stages with an activity indicator. Stage indicators are not byte-completion percentages or Google Photos cloud-upload progress.
+- Configure 1–3 concurrent tasks in Preferences (default 1). Preparation stays sequential to bound memory and Mac cache use; Pixel transfers can overlap. Pause backup before changing the setting.
+- Reserve space for all in-flight Pixel files together. Pause cancels all workers; shared temporary failures retain prepared progress for automatic recovery.
+- Isolate temporary paths for identical-content photos with different destination filenames.
 
-Includes the task filters and automatic recovery improvements from beta.2.
+Includes beta.2 recovery and filtering and beta.3 empty-state layout fixes. This setting controls Mac-to-Pixel work, not Google Photos uploads. Actual throughput depends on USB, Pixel storage and iCloud downloads.
 
 Free macOS beta for Apple Silicon, macOS 14+.
 

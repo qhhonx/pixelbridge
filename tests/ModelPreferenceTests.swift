@@ -22,7 +22,8 @@ import Foundation
         model.autoRunning = false
         let fields: [(NumericPreference, ReferenceWritableKeyPath<BridgeModel, Int>)] = [
             (.intervalMinutes, \.intervalMinutes), (.macReserveGB, \.macReserveGB),
-            (.pixelReserveGB, \.pixelReserveGB), (.maxTemperatureC, \.maxTemperatureC)
+            (.pixelReserveGB, \.pixelReserveGB), (.maxTemperatureC, \.maxTemperatureC),
+            (.concurrentTasks, \.concurrentTasks)
         ]
         for (preference, field) in fields {
             for value in [preference.fallback, preference.fallback + 1, -1, 9999] {

@@ -121,6 +121,7 @@ struct ContentView: View {
     @AppStorage("galleryShowLabels") private var galleryShowLabels = false
     @State private var kindFilter = "all"
     @State private var loadedPhotos = 0
+    @StateObject private var galleryPosition = GalleryPosition()
     @State private var showInstall = false
     @State private var selectedTask: String?
     @State private var taskStatusFilter: TaskStatusFilter = .all
@@ -276,7 +277,7 @@ struct ContentView: View {
                 PhotoGrid(items: visiblePhotos, revision: model.galleryRevision, filter: kindFilter,
                     tileSize: tileSize, language: L10n.language, phases: model.phases,
                     retryIDs: model.pendingRetryIDs, activeID: model.busy && !model.pausing ? model.currentItem?.id : nil,
-                    showLabels: galleryShowLabels, onLoaded: { loadedPhotos = $0 })
+                    position: galleryPosition, activeIDs: model.activeIDs, showLabels: galleryShowLabels, onLoaded: { loadedPhotos = $0 })
                     .padding(.horizontal, Layout.contentInset)
                 HStack {
                     Text(loadedPhotos >= visiblePhotos.count ? tr(.gallery_loaded_all, String(visiblePhotos.count.formatted())) : tr(.gallery_loaded, String(loadedPhotos.formatted()), String(visiblePhotos.count.formatted())))
@@ -410,7 +411,7 @@ struct ContentView: View {
     }
     private var tasks: some View {
         let visibleRows = filteredTasks(model.rows, status: taskStatusFilter, kind: taskKindFilter,
-            kinds: model.libraryKinds, requested: model.pendingRetryIDs, activeID: model.busy ? model.currentItem?.id : nil)
+            kinds: model.libraryKinds, requested: model.pendingRetryIDs, activeID: model.busy ? model.currentItem?.id : nil, activeIDs: model.activeIDs)
         return VStack(alignment: .leading, spacing: 20) {
             HStack {
                 SectionHeading(title: tr(.tasks_heading), detail: tr(.tasks_summary, String(describing: model.rows.count.formatted()), String(describing: model.failed)))
@@ -454,19 +455,38 @@ struct ContentView: View {
                     TableColumn(tr(.tasks_column_file)) { row in
                         HStack(spacing: 10) {
                             Thumbnail(assetID: row.id).frame(width: 36, height: 36).clipShape(RoundedRectangle(cornerRadius: 6))
-                            Text(row.filename).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(row.filename).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                                Text(Date(timeIntervalSince1970: row.timestamp_ms / 1000), format: .dateTime.month().day().hour().minute())
+                                    .font(.system(size: 10)).foregroundStyle(Palette.muted)
+                                    .help(tr(.tasks_column_updated))
+                            }
                         }.padding(.vertical, 5)
-                    }.width(min: 180, ideal: 250)
+                    }.width(min: 150, ideal: 210)
                     TableColumn(tr(.tasks_column_status)) { row in
-                        Label(model.taskLabel(row), systemImage: model.taskStatus(row).symbol)
-                            .font(.system(size: 11)).foregroundStyle(row.delivered ? Color.green : (model.taskStatus(row) == .failed ? Color.orange : Palette.muted))
-                    }.width(110)
-                    TableColumn(tr(.tasks_column_updated)) { row in
-                        Text(Date(timeIntervalSince1970: row.timestamp_ms / 1000), format: .dateTime.month().day().hour().minute())
+                        VStack(alignment: .leading, spacing: 5) {
+                            Label(model.taskLabel(row), systemImage: model.taskStatus(row).symbol)
+                                .font(.system(size: 11)).foregroundStyle(row.delivered ? Color.green : (model.taskStatus(row) == .failed ? Color.orange : Palette.muted))
+                            if let progress = model.activeTransfers[row.id], !row.delivered {
+                                HStack(spacing: 3) {
+                                    ForEach(1...4, id: \.self) { step in
+                                        Capsule().fill(step <= progress.stage.step ? accent.opacity(0.7) : Palette.line)
+                                            .frame(height: 3)
+                                    }
+                                    ProgressView().controlSize(.mini).scaleEffect(0.7).frame(width: 12, height: 10)
+                                }.frame(maxWidth: 130).help(tr(.tasks_stage_progress_help))
+                                    .accessibilityLabel(tr(.tasks_stage_progress_help))
+                                    .accessibilityValue(tr(progress.stage.title))
+                            }
+                        }
+                    }.width(160)
+                    TableColumn(tr(.tasks_column_size)) { row in
+                        Text(row.bytes.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) } ?? tr(.tasks_size_unknown))
                             .font(.system(size: 11)).foregroundStyle(Palette.muted)
-                    }.width(115)
+                            .help(tr(.tasks_size_help))
+                    }.width(85)
                     TableColumn(tr(.tasks_column_details)) { row in
-                        Text(row.message ?? (row.delivered ? tr(.queue_verified) : tr(.queue_automatic_pending))).font(.system(size: 11)).foregroundStyle(Palette.muted).lineLimit(2).help(row.message ?? row.remote ?? "")
+                        Text(model.activeTransfers[row.id] != nil && !row.delivered ? tr(.tasks_active_description) : (row.message ?? (row.delivered ? tr(.queue_verified) : tr(.queue_automatic_pending)))).font(.system(size: 11)).foregroundStyle(Palette.muted).lineLimit(2).help(row.message ?? row.remote ?? "")
                     }
                 }.tableStyle(.inset(alternatesRowBackgrounds: false))
                     .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -603,6 +623,10 @@ struct ContentView: View {
                     Divider()
                     PreferenceRow(title: tr(.settings_batch), detail: tr(.settings_batch_description)) {
                         NumberControl(title: tr(.settings_batch), value: $model.batchLimit, range: 1...100, unit: tr(.unit_items)).disabled(model.busy)
+                    }
+                    Divider()
+                    PreferenceRow(title: tr(.settings_concurrency), detail: tr(.settings_concurrency_description)) {
+                        NumberControl(title: tr(.settings_concurrency), value: $model.concurrentTasks, range: NumericPreference.concurrentTasks.range, unit: tr(.unit_items)).disabled(model.busy)
                     }
                     Text(tr(.settings_resume_notice)).font(.system(size: 12)).foregroundStyle(Palette.muted)
                 }

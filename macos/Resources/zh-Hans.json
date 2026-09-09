@@ -242,5 +242,15 @@
   "tasks_filtered_count": "显示 {0} / {1} 个任务",
   "tasks_clear_filters": "清除筛选",
   "tasks_no_matches": "没有符合条件的任务",
-  "tasks_no_matches_description": "试试其他状态或照片类型。"
+  "tasks_no_matches_description": "试试其他状态或照片类型。",
+  "tasks_column_size": "文件大小",
+  "tasks_size_unknown": "—",
+  "tasks_size_help": "实际传输文件的大小，包含动图视频部分。横线表示尚无大小记录；新任务准备完成时会记录大小。",
+  "tasks_stage_progress_help": "阶段进度：下载、准备、传输、校验。这不是按字节计算的完成百分比。",
+  "tasks_verifying": "校验文件中",
+  "settings_concurrency": "并发任务数量",
+  "settings_concurrency_description": "同时处理 1～3 个任务，默认为 1。原件下载与转换依次进行，Pixel 传输可以重叠。修改前请暂停备份；此设置不控制 Google Photos 的云端上传。",
+  "tasks_checking": "检查文件中",
+  "tasks_preparing": "准备文件中",
+  "tasks_active_description": "文件校验通过后，将标记为已传到 Pixel。"
 }

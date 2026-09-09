@@ -114,6 +114,15 @@ enum Commands {
         #[arg(long)]
         message: Option<String>,
     },
+    /// Persist the measured size of one prepared delivery.
+    QueueSetSize {
+        #[arg(long)]
+        state_dir: PathBuf,
+        #[arg(long)]
+        asset_id: String,
+        #[arg(long)]
+        bytes: i64,
+    },
     /// Print the reconstructed queue as JSON.
     QueueList {
         #[arg(long)]
@@ -178,6 +187,11 @@ fn main() -> Result<()> {
             remote.as_deref(),
             message.as_deref(),
         ),
+        Commands::QueueSetSize {
+            state_dir,
+            asset_id,
+            bytes,
+        } => Queue::open(&state_dir)?.set_size(&asset_id, bytes),
         Commands::QueueList { state_dir } => Queue::open(&state_dir)?.print_json(),
     }
 }
@@ -537,17 +551,22 @@ fn push(file: &Path, device: Option<&str>, adb: &Path, destination: &str) -> Res
         .and_then(OsStr::to_str)
         .context("invalid filename")?;
     let remote = format!("{}/{}", destination.trim_end_matches('/'), filename);
+    println!("progress: checking");
     let local_hash = sha256_file(file)?;
     // Retry is idempotent, and incomplete copies never appear in the photo feed.
     if verify_remote_hash(adb, device, &remote, &local_hash).is_err() {
-        let staging = format!("/sdcard/Download/.pixelbridge-{local_hash}.partial");
+        let destination_id = format!("{:x}", Sha256::digest(remote.as_bytes()));
+        let staging =
+            format!("/sdcard/Download/.pixelbridge-{local_hash}-{destination_id}.partial");
         let mut mkdir = adb_command(adb, device);
         run_checked(
             mkdir.args(["shell", &format!("mkdir -p {}", shell_quote(destination))]),
             "create destination",
         )?;
         let mut command = adb_command(adb, device);
+        println!("progress: transferring");
         run_checked(command.arg("push").arg(file).arg(&staging), "ADB push")?;
+        println!("progress: verifying");
         verify_remote_hash(adb, device, &staging, &local_hash)?;
         let mut commit = adb_command(adb, device);
         run_checked(
@@ -558,6 +577,7 @@ fn push(file: &Path, device: Option<&str>, adb: &Path, destination: &str) -> Res
             "commit Pixel file",
         )?;
     }
+    println!("progress: verifying");
     let mut scan = adb_command(adb, device);
     run_checked(
         scan.args([

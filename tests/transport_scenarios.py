@@ -2,7 +2,7 @@
 import tempfile, pathlib, subprocess, sys, os, json, hashlib, concurrent.futures, sqlite3
 CORE = pathlib.Path(__file__).resolve().parents[1] / 'target/release/pixelbridge'
 STUB = r'''
-import os, sys, pathlib, shlex, hashlib, shutil
+import os, sys, pathlib, shlex, hashlib, shutil, time
 root=pathlib.Path(os.environ['FAKE_ROOT']); args=sys.argv[1:]
 if args[:1]==['-s']: args=args[2:]
 mode=os.environ.get('FAKE_MODE','normal')
@@ -15,6 +15,7 @@ if args[:3]==['shell','df','-k']:
  print('Filesystem 1K-blocks Used Available Use% Mounted\n/dev/fake 30000000 1000000 '+('1000' if mode=='full' else '18000000')+' 1% /sdcard'); sys.exit(0)
 if args[0]=='push':
  p=local(args[2]); p.parent.mkdir(parents=True,exist_ok=True); shutil.copyfile(args[1],p)
+ if mode=='concurrent': time.sleep(0.2)
  if mode=='interrupt': p.write_bytes(b'partial'); sys.exit(1)
  if mode=='corrupt': p.write_bytes(b'corrupt')
  sys.exit(0)
@@ -48,6 +49,13 @@ with tempfile.TemporaryDirectory(prefix='pixelbridge-scenarios-') as temp:
  push('scan_fail',False); before=(root/'calls').read_text().count("['push'"); push(); assert (root/'calls').read_text().count("['push'")==before
  for mode in ['normal','offline','hot','full']:
   run('device-status','--adb',str(adb),'--device','fixture',mode=mode,success=mode=='normal')
+ # Identical contents under distinct asset filenames must have separate staging paths.
+ twins=[root/'twin-a.jpg',root/'twin-b.jpg']
+ for twin in twins: twin.write_bytes(b'identical-content')
+ def push_twin(twin): return run('push','--file',str(twin),'--adb',str(adb),'--device','fixture',mode='concurrent')
+ with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool: list(pool.map(push_twin,twins))
+ for twin in twins: assert (root/'sdcard/DCIM/Camera'/twin.name).read_bytes()==twin.read_bytes()
+ print('PASS: concurrent identical-content photos use independent Pixel staging paths')
  state=root/'state'
  def add(i): return run('queue-add','--state-dir',str(state),'--asset-id',str(i),'--filename','same.jpg')
  with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool: list(pool.map(add,range(24)))

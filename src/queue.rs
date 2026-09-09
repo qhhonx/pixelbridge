@@ -52,6 +52,8 @@ struct QueueItem {
     remote: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bytes: Option<i64>,
 }
 
 const LEGACY_BLOCKER: &[u8] = br#"{"protocol":2,"timestamp_ms":0,"asset_id":"sqlite-migration","filename":"queue.sqlite3","phase":"discovered","message":"State migrated to SQLite. Use PixelBridge 0.3.4 or newer."}
@@ -99,6 +101,11 @@ impl Queue {
             _ => bail!("unsupported backup database version: {version}; use a newer PixelBridge"),
         }
         Self::seal_legacy(&db, state_dir)?;
+        // Additive optional metadata keeps existing progress and older readers intact.
+        db.execute_batch(
+            "CREATE TABLE IF NOT EXISTS job_details (
+            asset_id TEXT PRIMARY KEY NOT NULL, bytes INTEGER NOT NULL CHECK(bytes >= 0));",
+        )?;
         Ok(Self { db, _lock: lock })
     }
     fn migrate(db: &Connection, state_dir: &Path) -> Result<()> {
@@ -225,11 +232,30 @@ impl Queue {
             message: message.map(str::to_owned),
         };
         self.append(&event)?;
-        println!("{}", serde_json::to_string(&event)?);
+        println!(
+            "{}",
+            serde_json::to_string(&self.item(asset_id)?.context("queue item disappeared")?)?
+        );
+        Ok(())
+    }
+    pub fn set_size(&self, asset_id: &str, bytes: i64) -> Result<()> {
+        if bytes < 0 {
+            bail!("file size must not be negative");
+        }
+        self.item(asset_id)?.context("asset is not in queue")?;
+        self.db.execute(
+            "INSERT INTO job_details(asset_id,bytes) VALUES(?1,?2)
+            ON CONFLICT(asset_id) DO UPDATE SET bytes=excluded.bytes",
+            params![asset_id, bytes],
+        )?;
+        println!(
+            "{}",
+            serde_json::to_string(&self.item(asset_id)?.context("queue item disappeared")?)?
+        );
         Ok(())
     }
     pub fn print_json(&self) -> Result<()> {
-        let mut statement = self.db.prepare("SELECT asset_id, filename, phase, timestamp_ms, sha256, remote, message FROM jobs ORDER BY asset_id")?;
+        let mut statement = self.db.prepare("SELECT asset_id, filename, phase, timestamp_ms, sha256, remote, message, (SELECT bytes FROM job_details WHERE job_details.asset_id=jobs.asset_id) FROM jobs ORDER BY asset_id")?;
         let items = statement
             .query_map([], Self::read_item)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -253,7 +279,7 @@ impl Queue {
         Ok((hash, item.remote.context("delivery path is missing")?))
     }
     fn item(&self, asset_id: &str) -> Result<Option<QueueItem>> {
-        Ok(self.db.query_row("SELECT asset_id, filename, phase, timestamp_ms, sha256, remote, message FROM jobs WHERE asset_id=?1", [asset_id], Self::read_item).optional()?)
+        Ok(self.db.query_row("SELECT asset_id, filename, phase, timestamp_ms, sha256, remote, message, (SELECT bytes FROM job_details WHERE job_details.asset_id=jobs.asset_id) FROM jobs WHERE asset_id=?1", [asset_id], Self::read_item).optional()?)
     }
     fn read_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<QueueItem> {
         let key: String = row.get(2)?;
@@ -268,6 +294,7 @@ impl Queue {
             sha256: row.get(4)?,
             remote: row.get(5)?,
             message: row.get(6)?,
+            bytes: row.get(7)?,
         })
     }
     fn write_event(db: &Connection, event: &QueueEvent) -> Result<()> {
