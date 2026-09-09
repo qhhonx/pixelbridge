@@ -13,7 +13,10 @@ final class BridgeModel: ObservableObject {
     @Published private(set) var pausing = false
     @Published private(set) var galleryRevision = 0
     @Published private(set) var lastLibraryRefresh: Date?
-    @Published var library: [LibraryItem] = []
+    @Published var library: [LibraryItem] = [] {
+        didSet { libraryKinds = Dictionary(uniqueKeysWithValues: library.map { ($0.id, $0.kind) }) }
+    }
+    private(set) var libraryKinds: [String: String] = [:]
     @Published var gallery: [String: [LibraryItem]] = [:]
     @Published var totalAssets = 0
     @Published var libraryCounts = Message.empty
@@ -87,6 +90,9 @@ final class BridgeModel: ObservableObject {
     private var worker: Task<Void, Never>?
     #if PIXELBRIDGE_TESTING
     var testBatchOperation: (() async -> Void)?
+    var testPrepareBatch: (() async throws -> Void)?
+    var testGuardDevice: (() async throws -> Void)?
+    var testProcessItem: ((LibraryItem, QueueRow?) async throws -> Void)?
     #endif
     private var retries: [String: RetryInfo] = [:]
     private let state: URL
@@ -115,7 +121,7 @@ final class BridgeModel: ObservableObject {
             detectADB()
             await refreshDevice()
             if authorized { observeLibrary(); await scan() }
-            if autoRunning { nextRun = Date() }
+            if autoRunning { enqueueFailedTasks(); nextRun = Date() }
             timer = Task { [weak self] in
                 while !Task.isCancelled {
                     do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
@@ -283,6 +289,7 @@ final class BridgeModel: ObservableObject {
     }
     func startAutomatic() {
         guard !pausing else { return }
+        enqueueFailedTasks()
         autoRunning = true; UserDefaults.standard.set(true, forKey: "automatic"); nextRun = Date()
         Task { await batch() }
     }
@@ -296,18 +303,24 @@ final class BridgeModel: ObservableObject {
     }
     func retryNow() {
         guard !pausing else { return }
-        let failedIDs = Set(rows.filter { $0.phase == "failed" }.map(\.id))
-        guard !failedIDs.isEmpty else { return }
-        pendingRetryIDs.formUnion(failedIDs)
-        // Reset only the selected failures; retain unrelated retry history.
-        for id in failedIDs { retries[id] = nil }
-        saveRetries()
+        guard failed > 0 else { return }
         startAutomatic()
     }
+    private func enqueueFailedTasks() {
+        let failedIDs = Set(rows.filter { $0.phase == "failed" }.map(\.id))
+        pendingRetryIDs.formUnion(failedIDs)
+        for id in failedIDs { retries[id] = nil }
+        saveRetries()
+    }
+    func taskStatus(_ row: QueueRow) -> TaskStatusFilter {
+        TaskStatusFilter.status(of: row, requested: pendingRetryIDs, activeID: busy ? currentItem?.id : nil)
+    }
     func taskLabel(_ row: QueueRow) -> String {
-        if pendingRetryIDs.contains(row.id) { return tr(.queue_retry_queued) }
-        if !row.delivered && row.phase != "failed" && (currentItem?.id != row.id || !busy) { return tr(.queue_discovered) }
-        return row.label
+        switch taskStatus(row) {
+        case .processing: return row.phase == "failed" ? tr(.gallery_processing) : row.label
+        case .delivered: return row.label
+        default: return tr(taskStatus(row).title)
+        }
     }
     // Every entry point shares one owned task so pause cancels real work, and
     // a rapid resume cannot overlap the old worker or lose the batch lease.
@@ -342,20 +355,20 @@ final class BridgeModel: ObservableObject {
         stopRequested = false
         newAssetsPending = false
         var madeAttempt = false
+        var interrupted = false
         let activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .idleSystemSleepDisabled], reason: tr(.backup_activity_reason))
         defer {
             ProcessInfo.processInfo.endActivity(activity)
             busy = false; currentName = ""; currentItem = nil
-            if autoRunning { nextRun = Date().addingTimeInterval(newAssetsPending || (madeAttempt && !pendingRetryIDs.isEmpty) ? 2 : Double(intervalMinutes * 60)) }
+            if autoRunning {
+                let available = Set(library.map(\.id)).subtracting(rows.filter(\.delivered).map(\.id))
+                nextRun = nextBackupCheck(now: Date(), interval: Double(intervalMinutes * 60),
+                    interrupted: interrupted, urgent: newAssetsPending || (madeAttempt && !pendingRetryIDs.isEmpty),
+                    retries: retries, eligibleIDs: available)
+            }
         }
         do {
-            guard authorized else { throw fail(Message(.error_photos_permission)) }
-            await refreshDevice()
-            try Task.checkCancellation()
-            guard ready else { throw fail(Message(.error_setup_required)) }
-            await scan()
-            try Task.checkCancellation()
-            try await refreshQueue()
+            try await prepareBatch()
             pendingRetryIDs.subtract(rows.filter(\.delivered).map(\.id))
             if autoReclaimCache { await reclaimDeliveredCache() }
             let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
@@ -381,9 +394,14 @@ final class BridgeModel: ObservableObject {
                     throw CancellationError()
                 } catch {
                     if Task.isCancelled { throw CancellationError() }
+                    if isTemporaryInterruption(error) {
+                        retries[item.id] = nil
+                        saveRetries()
+                        // Keep exporting/prepared progress, including its verified hash.
+                        throw error
+                    }
                     failures += 1
-                    let n = (retries[item.id]?.attempts ?? 0) + 1
-                    retries[item.id] = RetryInfo(attempts: n, next: Date().addingTimeInterval(min(21600, 60 * pow(2, Double(min(n, 9))))))
+                    retries[item.id] = nextRetry(previous: retries[item.id], now: Date())
                     if prior == nil { _ = try? await invoke(["queue-add", "--state-dir", state.path, "--asset-id", item.id, "--filename", currentName]) }
                     try? await transition(item.id, "failed", message: error.localizedDescription)
                     log("\(item.name)：\(error.localizedDescription)")
@@ -397,13 +415,29 @@ final class BridgeModel: ObservableObject {
         } catch is CancellationError {
             status = Message(.status_paused); detail = Message(.backup_paused)
         } catch {
+            interrupted = true
             status = stopRequested ? Message(.status_paused) : Message(.status_waiting)
             detail = stopRequested ? Message(.backup_paused) : Message(error: error)
             if !stopRequested { log(error.localizedDescription) }
         }
     }
+    private func prepareBatch() async throws {
+        #if PIXELBRIDGE_TESTING
+        if let testPrepareBatch { try await testPrepareBatch(); return }
+        #endif
+        guard authorized else { throw fail(Message(.error_photos_permission)) }
+        await refreshDevice()
+        try Task.checkCancellation()
+        guard ready else { throw fail(Message(.error_setup_required)) }
+        await scan()
+        try Task.checkCancellation()
+        try await refreshQueue()
+    }
     private func guardDevice(extraBytes: Int64 = 0, cacheExtraBytes: Int64 = 0) async throws {
         try Task.checkCancellation()
+        #if PIXELBRIDGE_TESTING
+        if let testGuardDevice { try await testGuardDevice(); return }
+        #endif
         guard !selectedDevice.isEmpty, !adbPath.isEmpty else { throw fail(Message(.error_pixel_waiting)) }
         let product = try await processOutput(URL(fileURLWithPath: adbPath), ["-s", selectedDevice, "shell", "getprop", "ro.product.device"], timeout: 30).trimmingCharacters(in: .whitespacesAndNewlines)
         guard ["marlin", "sailfish"].contains(product) else { throw fail(Message(.error_pixel_generation)) }
@@ -429,6 +463,9 @@ final class BridgeModel: ObservableObject {
     }
     private func process(_ item: LibraryItem, prior: QueueRow?) async throws {
         try Task.checkCancellation()
+        #if PIXELBRIDGE_TESTING
+        if let testProcessItem { try await testProcessItem(item, prior); return }
+        #endif
         let assetResult = PHAsset.fetchAssets(withLocalIdentifiers: [item.id], options: nil)
         guard let asset = assetResult.firstObject else { throw fail(Message(.error_asset_missing)) }
         let resources = PHAssetResource.assetResources(for: asset)

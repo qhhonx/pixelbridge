@@ -237,6 +237,12 @@ enum TextKey: String, CaseIterable {
     case tasks_file_details
     case tasks_heading
     case tasks_retry
+    case tasks_status_all
+    case tasks_type_unknown
+    case tasks_filtered_count
+    case tasks_clear_filters
+    case tasks_no_matches
+    case tasks_no_matches_description
     case tasks_summary
     case unit_items
     case unit_minutes

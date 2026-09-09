@@ -279,3 +279,76 @@ func photoDeliveryState(phase: String?, retry: Bool, active: Bool) -> TextKey {
     if phase == "failed" { return .queue_failed }
     return .gallery_not_transferred
 }
+
+// Shared infrastructure failures suspend the batch without penalizing an asset.
+func isTemporaryInterruption(_ error: Error, depth: Int = 0) -> Bool {
+    guard depth < 8 else { return false }
+    if let failure = error as? BridgeFailure,
+       [.error_pixel_temperature, .error_pixel_storage, .error_pixel_disconnected,
+        .error_pixel_waiting, .error_cache_budget, .error_mac_storage,
+        .error_download_budget, .error_icloud_timeout, .error_timeout].contains(failure.message.key) { return true }
+    let ns = error as NSError
+    if ns.domain == NSURLErrorDomain { return true }
+    if ns.domain == NSPOSIXErrorDomain && ns.code == Int(ENOSPC) { return true }
+    if ns.domain == NSCocoaErrorDomain && ns.code == NSFileWriteOutOfSpaceError { return true }
+    if let underlying = ns.userInfo[NSUnderlyingErrorKey] as? Error,
+       isTemporaryInterruption(underlying, depth: depth + 1) { return true }
+    // ADB and the Rust helper expose transport failures through stderr.
+    let text = ns.localizedDescription.lowercased()
+    return ["device offline", "device not found", "no devices/emulators", "device disconnected",
+            "no space left on device", "network connection was lost", "internet connection appears to be offline",
+            "connection reset", "broken pipe", "transport error", "pixel is not ready",
+            "pixel is too warm", "below the batch reserve"].contains { text.contains($0) }
+}
+
+func nextRetry(previous: RetryInfo?, now: Date) -> RetryInfo {
+    let attempts = min(30, (previous?.attempts ?? 0) + 1)
+    return RetryInfo(attempts: attempts, next: now.addingTimeInterval(min(300, 30 * pow(2, Double(min(attempts - 1, 4))))))
+}
+
+func nextBackupCheck(now: Date, interval: TimeInterval, interrupted: Bool,
+                     urgent: Bool, retries: [String: RetryInfo], eligibleIDs: Set<String>) -> Date {
+    if interrupted { return now.addingTimeInterval(60) }
+    if urgent { return now.addingTimeInterval(2) }
+    let earliest = retries.filter { eligibleIDs.contains($0.key) }.map { $0.value.next }.min()
+    return min(now.addingTimeInterval(interval), max(now.addingTimeInterval(2), earliest ?? now.addingTimeInterval(interval)))
+}
+
+enum TaskStatusFilter: String, CaseIterable {
+    case all, failed, queued, waiting, processing, delivered
+    var title: TextKey {
+        switch self {
+        case .all: return .tasks_status_all
+        case .failed: return .queue_failed
+        case .queued: return .queue_retry_queued
+        case .waiting: return .queue_discovered
+        case .processing: return .gallery_processing
+        case .delivered: return .metric_delivered
+        }
+    }
+    static func status(of row: QueueRow, requested: Set<String>, activeID: String?) -> Self {
+        if row.delivered { return .delivered }
+        if activeID == row.id { return .processing }
+        if requested.contains(row.id) { return .queued }
+        if row.phase == "failed" { return .failed }
+        return .waiting
+    }
+    var symbol: String {
+        switch self {
+        case .all: return "line.3.horizontal.decrease.circle"
+        case .failed: return "exclamationmark.circle"
+        case .queued: return "arrow.clockwise.circle"
+        case .waiting: return "clock"
+        case .processing: return "arrow.triangle.2.circlepath"
+        case .delivered: return "checkmark.circle.fill"
+        }
+    }
+}
+
+func filteredTasks(_ rows: [QueueRow], status: TaskStatusFilter, kind: String,
+                   kinds: [String: String], requested: Set<String>, activeID: String?) -> [QueueRow] {
+    rows.filter { row in
+        (status == .all || TaskStatusFilter.status(of: row, requested: requested, activeID: activeID) == status)
+            && (kind == "all" || (kinds[row.id] ?? "unknown") == kind)
+    }
+}

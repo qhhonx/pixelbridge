@@ -113,7 +113,7 @@
   "backup_once": "Back up once",
   "tasks_heading": "Every transfer, accounted for",
   "tasks_summary": "{0} tasks · {1} waiting to retry",
-  "tasks_retry": "Retry failed tasks",
+  "tasks_retry": "Retry all failed tasks",
   "tasks_empty": "No transfer tasks yet",
   "tasks_empty_description": "Start a backup to see each file’s progress here.",
   "tasks_column_file": "Photo / video",
@@ -236,5 +236,11 @@
   "updates_description": "Free, open-source beta. Update packages are verified before installation.",
   "updates_check": "Check for Updates…",
   "updates_automatic": "Automatically check for updates",
-  "updates_automatic_description": "Notify when a new version is available. You choose when to install."
+  "updates_automatic_description": "Notify when a new version is available. You choose when to install.",
+  "tasks_status_all": "All statuses",
+  "tasks_type_unknown": "Unknown type",
+  "tasks_filtered_count": "{0} of {1} tasks",
+  "tasks_clear_filters": "Clear filters",
+  "tasks_no_matches": "No matching tasks",
+  "tasks_no_matches_description": "Try another status or photo type."
 }

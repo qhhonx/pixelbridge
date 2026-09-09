@@ -123,6 +123,8 @@ struct ContentView: View {
     @State private var loadedPhotos = 0
     @State private var showInstall = false
     @State private var selectedTask: String?
+    @State private var taskStatusFilter: TaskStatusFilter = .all
+    @State private var taskKindFilter = "all"
     @State private var showLogs = false
 
     var body: some View {
@@ -403,15 +405,44 @@ struct ContentView: View {
         }
     }
     private var tasks: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        let visibleRows = filteredTasks(model.rows, status: taskStatusFilter, kind: taskKindFilter,
+            kinds: model.libraryKinds, requested: model.pendingRetryIDs, activeID: model.busy ? model.currentItem?.id : nil)
+        return VStack(alignment: .leading, spacing: 20) {
             HStack {
                 SectionHeading(title: tr(.tasks_heading), detail: tr(.tasks_summary, String(describing: model.rows.count.formatted()), String(describing: model.failed)))
                 Button(tr(.tasks_retry)) { model.retryNow() }.buttonStyle(ActionStyle()).disabled(model.pausing || model.failed == 0)
             }
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 16) {
+                    Picker(tr(.tasks_column_status), selection: $taskStatusFilter) {
+                        ForEach(TaskStatusFilter.allCases, id: \.self) { filter in
+                            Text(tr(filter.title)).tag(filter)
+                        }
+                    }.frame(width: 230)
+                    Picker(tr(.gallery_media_type), selection: $taskKindFilter) {
+                        ForEach(["all", "photo", "motion", "video", "unknown"], id: \.self) { kind in
+                            Text(kind == "unknown" ? tr(.tasks_type_unknown) : mediaLabel(kind)).tag(kind)
+                        }
+                    }.frame(width: 230)
+                    Spacer(minLength: 0)
+                }.pickerStyle(.menu)
+                HStack {
+                    Text(tr(.tasks_filtered_count, visibleRows.count.formatted(), model.rows.count.formatted()))
+                        .font(.system(size: 12)).foregroundStyle(Palette.muted)
+                    Spacer()
+                    if taskStatusFilter != .all || taskKindFilter != "all" {
+                        Button(tr(.tasks_clear_filters)) { taskStatusFilter = .all; taskKindFilter = "all" }
+                            .buttonStyle(.borderless)
+                    }
+                }
+            }
             if model.rows.isEmpty {
                 ContentUnavailableView(tr(.tasks_empty), systemImage: "arrow.triangle.2.circlepath", description: Text(tr(.tasks_empty_description)))
+            } else if visibleRows.isEmpty {
+                ContentUnavailableView(tr(.tasks_no_matches), systemImage: "line.3.horizontal.decrease.circle",
+                    description: Text(tr(.tasks_no_matches_description)))
             } else {
-                Table(model.rows, selection: $selectedTask) {
+                Table(visibleRows, selection: $selectedTask) {
                     TableColumn(tr(.tasks_column_file)) { row in
                         HStack(spacing: 10) {
                             Thumbnail(assetID: row.id).frame(width: 36, height: 36).clipShape(RoundedRectangle(cornerRadius: 6))
@@ -419,8 +450,8 @@ struct ContentView: View {
                         }.padding(.vertical, 5)
                     }.width(min: 180, ideal: 250)
                     TableColumn(tr(.tasks_column_status)) { row in
-                        Label(model.taskLabel(row), systemImage: row.delivered ? "checkmark.circle.fill" : "clock")
-                            .font(.system(size: 11)).foregroundStyle(row.delivered ? Color.green : Palette.muted)
+                        Label(model.taskLabel(row), systemImage: model.taskStatus(row).symbol)
+                            .font(.system(size: 11)).foregroundStyle(row.delivered ? Color.green : (model.taskStatus(row) == .failed ? Color.orange : Palette.muted))
                     }.width(110)
                     TableColumn(tr(.tasks_column_updated)) { row in
                         Text(Date(timeIntervalSince1970: row.timestamp_ms / 1000), format: .dateTime.month().day().hour().minute())
@@ -432,7 +463,7 @@ struct ContentView: View {
                 }.tableStyle(.inset(alternatesRowBackgrounds: false))
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                     .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Palette.line))
-                if let row = model.rows.first(where: { $0.id == selectedTask }) {
+                if let row = visibleRows.first(where: { $0.id == selectedTask }) {
                     Surface {
                         HStack(spacing: 16) {
                             Thumbnail(assetID: row.id).frame(width: 60, height: 60).clipShape(RoundedRectangle(cornerRadius: 8))
@@ -453,6 +484,8 @@ struct ContentView: View {
             Label(tr(.tasks_cloud_notice), systemImage: "info.circle")
                 .font(.system(size: 12)).foregroundStyle(Palette.muted)
         }.padding(30)
+            .onChange(of: taskStatusFilter) { _, _ in selectedTask = nil }
+            .onChange(of: taskKindFilter) { _, _ in selectedTask = nil }
     }
     private var device: some View {
         ScrollView {

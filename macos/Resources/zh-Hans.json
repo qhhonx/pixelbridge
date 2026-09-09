@@ -113,7 +113,7 @@
   "backup_once": "备份一次",
   "tasks_heading": "每一份传输，都有迹可循",
   "tasks_summary": "{0} 个任务 · {1} 个等待重试",
-  "tasks_retry": "重试失败任务",
+  "tasks_retry": "重试全部失败任务",
   "tasks_empty": "还没有传输任务",
   "tasks_empty_description": "开始备份后，可以在这里查看每个文件的处理状态。",
   "tasks_column_file": "照片 / 视频",
@@ -236,5 +236,11 @@
   "updates_description": "免费开源测试版，安装更新前会校验更新包。",
   "updates_check": "检查更新…",
   "updates_automatic": "自动检查更新",
-  "updates_automatic_description": "发现新版本时通知，由你决定何时安装。"
+  "updates_automatic_description": "发现新版本时通知，由你决定何时安装。",
+  "tasks_status_all": "全部状态",
+  "tasks_type_unknown": "类型未知",
+  "tasks_filtered_count": "显示 {0} / {1} 个任务",
+  "tasks_clear_filters": "清除筛选",
+  "tasks_no_matches": "没有符合条件的任务",
+  "tasks_no_matches_description": "试试其他状态或照片类型。"
 }

@@ -35,8 +35,70 @@ import Foundation
         precondition(photoDeliveryState(phase: "backup_seen", retry: false, active: false) == .queue_backed_up)
         print("PASS: retry priority, cooldown, four-batch draining, completed deduplication and honest per-photo statuses")
 
+        for key: TextKey in [.error_pixel_temperature, .error_pixel_storage, .error_cache_budget,
+                             .error_mac_storage, .error_download_budget, .error_pixel_disconnected, .error_icloud_timeout] {
+            precondition(isTemporaryInterruption(fail(Message(key))))
+        }
+        let network = NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet)
+        precondition(isTemporaryInterruption(NSError(domain: "PHPhotosErrorDomain", code: -1,
+            userInfo: [NSUnderlyingErrorKey: network])))
+        precondition(isTemporaryInterruption(NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC))))
+        precondition(isTemporaryInterruption(fail("adb: error: device offline")))
+        precondition(!isTemporaryInterruption(fail(Message(.error_format_unsupported, "raw"))))
+        precondition(!isTemporaryInterruption(fail(Message(.error_cache_corrupt))))
+        var retry: RetryInfo?
+        for delay in [30.0, 60, 120, 240, 300, 300] {
+            retry = nextRetry(previous: retry, now: now)
+            precondition(retry!.next.timeIntervalSince(now) == delay)
+        }
+        precondition(nextBackupCheck(now: now, interval: 300, interrupted: true, urgent: true,
+            retries: [:], eligibleIDs: []) == now.addingTimeInterval(60), "A blocked batch must not spin on manual requests")
+        precondition(nextBackupCheck(now: now, interval: 300, interrupted: false, urgent: false,
+            retries: ["a": RetryInfo(attempts: 1, next: now.addingTimeInterval(30))], eligibleIDs: ["a"]) == now.addingTimeInterval(30))
+        precondition(nextBackupCheck(now: now, interval: 300, interrupted: false, urgent: false,
+            retries: ["gone": RetryInfo(attempts: 1, next: now.addingTimeInterval(-100))], eligibleIDs: []) == now.addingTimeInterval(300))
+        let kinds = ["1000": "motion", "1001": "photo", "1002": "video"]
+        precondition(filteredTasks(rows, status: .failed, kind: "motion", kinds: kinds, requested: [], activeID: nil).map(\.id) == ["1000"])
+        precondition(filteredTasks(rows, status: .failed, kind: "photo", kinds: kinds, requested: [], activeID: nil).isEmpty)
+        precondition(filteredTasks(rows, status: .queued, kind: "all", kinds: kinds, requested: ["1000", "1002"], activeID: nil).map(\.id) == ["1000"])
+        precondition(filteredTasks(rows, status: .processing, kind: "all", kinds: kinds, requested: ["1000"], activeID: "1000").map(\.id) == ["1000"])
+        precondition(filteredTasks(rows, status: .delivered, kind: "unknown", kinds: kinds, requested: [], activeID: nil).count == 2)
+        precondition(filteredTasks(rows, status: .waiting, kind: "all", kinds: kinds, requested: [], activeID: nil).map(\.id) == ["1001"])
+        print("PASS: environmental/network/storage classification, bounded retries, automatic wake-up and combined task filters")
+
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try ensureDirectory(directory); defer { try? FileManager.default.removeItem(at: directory) }
+        try ensureDirectory(directory.appendingPathComponent("State"))
+        let recovering = BridgeModel(root: directory)
+        let savedReclaim = suite.object(forKey: "autoReclaimCache")
+        defer { if let savedReclaim { suite.set(savedReclaim, forKey: "autoReclaimCache") } else { suite.removeObject(forKey: "autoReclaimCache") } }
+        recovering.autoReclaimCache = false
+        recovering.autoRunning = true
+        recovering.library = [LibraryItem(id: "42", name: "motion", date: now, kind: "motion")]
+        recovering.testPrepareBatch = {}
+        recovering.testGuardDevice = {}
+        var resumedFromPrepared = false
+        for error: Error in [fail(Message(.error_pixel_temperature, "40")), fail(Message(.error_pixel_storage)), network] {
+            recovering.rows = [QueueRow(asset_id: "42", filename: "motion", phase: "prepared", timestamp_ms: 0,
+                sha256: "verified-hash", remote: nil, message: nil)]
+            recovering.testProcessItem = { _, _ in throw error }
+            await recovering.batch()
+            precondition(recovering.rows[0].phase == "prepared" && recovering.failed == 0)
+            precondition(recovering.status.key == .status_waiting && recovering.autoRunning)
+            precondition((recovering.nextRun?.timeIntervalSinceNow ?? 0) > 55)
+            recovering.testProcessItem = { _, prior in
+                resumedFromPrepared = prior?.phase == "prepared" && prior?.sha256 == "verified-hash"
+                recovering.rows = [row(42, "transferred")]
+            }
+            await recovering.batch()
+            precondition(resumedFromPrepared && recovering.delivered == 1)
+            await recovering.batch()
+            precondition(recovering.batchTotal == 0, "A recovered delivery must not be selected twice")
+        }
+        recovering.pause()
+        precondition(!recovering.autoRunning && recovering.nextRun == nil)
+        print("PASS: actual batch loop preserves prepared hash through heat/storage/network interruption, resumes and deduplicates")
+
         let destination = directory.appendingPathComponent("partial")
         let sink = try ResourceSink(destination, budget: 100)
         var completions = 0
@@ -86,14 +148,16 @@ import Foundation
         while !model.busy { await Task.yield() }
         model.pause(); await second.value
         precondition(starts == 2 && finished == 2 && !model.busy)
-        model.rows = failures
-        model.retryNow()
+        model.rows = failures + [row(1002, "transferred")]
+        model.library = [LibraryItem(id: "800", name: "live", date: now, kind: "motion")]
+        precondition(model.libraryKinds["800"] == "motion")
+        model.startAutomatic()
         precondition(model.pendingRetryIDs.count == 200 && model.autoRunning)
         precondition(model.taskLabel(failures[0]) == tr(.queue_retry_queued))
         while !model.busy { await Task.yield() }
         model.pause()
         while model.pausing { await Task.yield() }
         precondition(!model.busy)
-        print("PASS: real model worker ownership, pause, blocked rapid resume, subsequent restart and retry action enqueues 200 failures")
+        print("PASS: real model worker ownership, pause, blocked rapid resume, subsequent restart and resume enqueues 200 failures without delivered items")
     }
 }
