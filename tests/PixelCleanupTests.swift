@@ -78,10 +78,19 @@ import Foundation
         }
         print("PASS: setup probes confirmation or empty state across versions without cleaning; unknown and cloud-storage pages are rejected")
         version = "8.0.0.fixture"
-        pages = [home, menu, confirm, confirm, progress, complete]; calls = []
-        let result = try await adapter.run(account: account, pending: false, started: { started += 1 }, finished: { finished += 1 })
+        pages = [home, menu, confirm, confirm, progress, complete, home]; calls = []
+        var events: [CleanupProgress] = []
+        let result = try await adapter.run(account: account, pending: false, progress: { events.append($0) }, started: { started += 1 }, finished: { finished += 1 })
         guard case .completed(let reclaimed) = result else { preconditionFailure("Missing completion") }
-        precondition(started == 1 && finished == 1 && taps() == 3 && reclaimed == 16_000_000 * 1024)
+        precondition(started == 1 && finished == 1 && taps() == 4 && reclaimed == 16_000_000 * 1024)
+        precondition(events == [.checkingDevice, .openingPhotos, .checkingAccount, .openingCleanup, .confirming, .releasing(nil), .releasing(50), .verifyingSpace, .returningHome])
+        precondition(pages.isEmpty)
+        check(try CleanupXML.read(progress).progressPercent == 50)
+        for value in ["101%", "-1%", "1000%", "50% and 20%", "unknown"] {
+            check(try CleanupXML.read(xml(node("free_up_space_progress_text", value))).progressPercent == nil)
+        }
+        check(try CleanupXML.read(xml(node("free_up_space_progress_text", "52.5% complete"))).progressPercent == 52.5)
+        print("PASS: ordered cleanup stages, real percentage validation and return to Photos after confirmed completion")
         let paths = calls.filter { $0.starts(with: ["shell", "uiautomator"]) }.compactMap(\.last)
         precondition(paths.count == Set(paths).count)
         print("PASS: read-only enable; one cleanup click; fresh confirmation; completion plus real space measurement")
@@ -91,9 +100,9 @@ import Foundation
         for status in ["备份完成", "", "正在备份", "Backing up 3 items"] {
             let currentHome = home.replacingOccurrences(of: "已完成备份", with: status)
             let currentMenu = menu.replacingOccurrences(of: "备份已完成", with: status)
-            pages = [currentHome, currentMenu, confirm, confirm, complete]; calls = []; started = 0; finished = 0
+            pages = [currentHome, currentMenu, confirm, confirm, complete, currentHome]; calls = []; started = 0; finished = 0
             _ = try await adapter.run(account: account, pending: false, started: { started += 1 }, finished: { finished += 1 })
-            precondition(taps() == 3 && started == 1 && finished == 1 && pages.isEmpty)
+            precondition(taps() == 4 && started == 1 && finished == 1 && pages.isEmpty)
             // The global status is irrelevant, but the official safe-backup claim is mandatory.
             pages = [currentHome, currentMenu, confirm.replacingOccurrences(of: "安全备份", with: "尚未备份")]; calls = []
             do {
@@ -115,9 +124,9 @@ import Foundation
             precondition(started == 0 && finished == 0 && taps() <= (bad == "changed-confirmation" ? 2 : 0))
         }
         print("PASS: missing active version, secure lock, changed account and changed confirmation never trigger cleanup")
-        version = "7.91.0.973540846"; locked = false; calls = []; pages = [progress, progress, complete]
+        version = "7.91.0.973540846"; locked = false; calls = []; pages = [progress, progress, complete, home]
         _ = try await adapter.run(account: account, pending: true, started: { preconditionFailure("Duplicate cleanup") }, finished: { finished += 1 })
-        precondition(taps() == 0)
+        precondition(taps() == 1) // Only Done, never a repeated cleanup action.
         calls = []; pages = [home, menu, confirm]
         _ = try await adapter.run(account: account, pending: true, started: { preconditionFailure("Repeated cleanup") }, finished: { finished += 1 })
         precondition(taps() == 2)
@@ -133,6 +142,12 @@ import Foundation
         do { _ = try await adapter.snapshot(); preconditionFailure("Stale dump accepted") } catch {}
         precondition(!calls.contains { $0.starts(with: ["exec-out", "cat"]) })
         print("PASS: pending cleanup is only observed, unknown completion blocks transfers, idle failure never reads stale XML")
+
+        pages = [home, menu, confirm, confirm, complete, xml(node("unknown"))]; calls = []; events = []
+        let navigationResult = try await adapter.run(account: account, pending: false, progress: { events.append($0) }, started: {}, finished: {})
+        guard case .completed = navigationResult else { preconditionFailure("Completed cleanup lost") }
+        precondition(events.last == .returnHomeFailed && taps() == 4)
+        print("PASS: failed return navigation does not repeat or invalidate confirmed cleanup")
 
         var pending = false
         pages = [home, menu, confirm, confirm]; calls = []

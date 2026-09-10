@@ -32,6 +32,8 @@ import Foundation
         defaults.set(["device": "fixture", "account": account], forKey: "pixelCleanupBinding")
         var available: Int64 = 1_400_000_000, recovered: Int64 = 5_000_000_000
         var temperature = 39.0, foreground = pkg, pages: [String] = [], taps = 0
+        var observed: BridgeModel?
+        var sawLivePercent = false
         let adapter = PixelCleanup(command: { args, _ in
             if args.contains("ro.product.device") { return "marlin" }
             if args.contains("ro.build.version.release") { return "10" }
@@ -43,7 +45,15 @@ import Foundation
             if args.starts(with: ["exec-out", "cat"]) {
                 guard !pages.isEmpty else { throw CleanupIssue.page }
                 let page = pages.removeFirst()
-                if page == complete { available = recovered }
+                if page == complete {
+                    available = recovered
+                    if let model = observed {
+                        precondition(model.cleanupProgress == .releasing(50))
+                        precondition(model.activityDescription == model.cleanupMessage.text)
+                        precondition(model.activityDescription.contains("50"))
+                        sawLivePercent = true
+                    }
+                }
                 return page
             }
             if args.starts(with: ["shell", "input", "tap"]) { taps += 1 }
@@ -101,9 +111,12 @@ import Foundation
         precondition(defaults.object(forKey: "pixelCleanupLastAction") == nil)
         print("PASS: restart preserves the required file space; temperature, foreground and empty states block transfers without consuming the action cooldown")
 
-        pages = [uploading, menu.replacingOccurrences(of: "Backup complete", with: "Backing up"), confirm, confirm, progress, complete]; taps = 0
+        pages = [uploading, menu.replacingOccurrences(of: "Backup complete", with: "Backing up"), confirm, confirm, progress, complete, home]; taps = 0
+        observed = restarted
         await restarted.batch()
-        precondition(taps == 3 && deliveries == 1 && restarted.delivered == 1)
+        observed = nil
+        precondition(sawLivePercent && restarted.cleanupProgress == nil)
+        precondition(taps == 4 && deliveries == 1 && restarted.delivered == 1)
         precondition(defaults.object(forKey: "pixelCleanupHoldDevice") == nil && defaults.object(forKey: "pixelCleanupPendingDevice") == nil)
         precondition(defaults.object(forKey: "pixelCleanupLastAction") != nil)
         await restarted.batch(); precondition(deliveries == 1)
@@ -122,9 +135,9 @@ import Foundation
         let uncertain = model(); pages = [progress, xml(node("unknown"))]; taps = 0
         await uncertain.batch()
         precondition(uncertain.detail.key == .cleanup_pending && deliveries == 1 && taps == 0)
-        pages = [progress, complete]
+        pages = [progress, complete, home]
         await uncertain.batch()
-        precondition(deliveries == 2 && taps == 0)
+        precondition(deliveries == 2 && taps == 1)
         print("PASS: high free space cannot bypass pending cleanup; restart reconciliation never sends another cleanup click")
 
         defaults.removeObject(forKey: "pixelCleanupLastAction")

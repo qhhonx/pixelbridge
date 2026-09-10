@@ -219,7 +219,7 @@ struct ContentView: View {
         VStack(spacing: 0) {
             Rectangle().fill(Palette.transferLine).frame(height: 1)
             HStack(spacing: 14) {
-                if model.busy, let item = model.currentItem {
+                if model.busy, model.cleanupProgress == nil, let item = model.currentItem {
                     Group {
                         Thumbnail(assetID: item.id).frame(width: 40 * Layout.scale, height: 36 * Layout.scale).clipShape(RoundedRectangle(cornerRadius: 8))
                     }
@@ -242,7 +242,7 @@ struct ContentView: View {
         }.background(Palette.subtle)
     }
     private var statusLine: String {
-        if model.busy { return model.currentName.isEmpty ? model.detail.text : model.currentName }
+        if model.busy { return model.activityDescription }
         if model.scanning || model.needsAttention { return model.detail.text }
         return tr(.backup_footer_summary, String(describing: model.delivered.formatted()))
     }
@@ -385,7 +385,7 @@ struct ContentView: View {
     private var currentTransfer: some View {
         Surface {
             HStack(alignment: .center, spacing: 24) {
-                if model.busy, let item = model.currentItem {
+                if model.busy, model.cleanupProgress == nil, let item = model.currentItem {
                     Group {
                         Thumbnail(assetID: item.id).frame(width: 150, height: 120).clipShape(RoundedRectangle(cornerRadius: 10))
                     }
@@ -397,8 +397,14 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 9) {
                     Text(model.busy || model.needsAttention ? model.status.text : (model.autoRunning ? tr(.status_automatic) : tr(.backup_ready)))
                         .font(.system(size: 21, weight: .medium))
-                    Text(model.busy ? model.currentName : model.detail.text).font(.system(size: 13)).foregroundStyle(Palette.muted).lineLimit(2).textSelection(.enabled)
-                    if model.busy {
+                    Text(model.busy ? model.activityDescription : model.detail.text).font(.system(size: 13)).foregroundStyle(Palette.muted).lineLimit(2).textSelection(.enabled)
+                    if let cleanup = model.cleanupProgress {
+                        if let fraction = cleanup.fraction {
+                            ProgressView(value: fraction).padding(.top, 5)
+                        } else {
+                            ProgressView().controlSize(.small).padding(.top, 5)
+                        }
+                    } else if model.busy {
                         ProgressView(value: Double(model.completed), total: Double(max(1, model.batchTotal))).padding(.top, 5)
                         Text(tr(.backup_batch_progress, String(describing: model.completed), String(describing: model.batchTotal))).font(.system(size: 12)).foregroundStyle(Palette.muted).monospacedDigit()
                     } else if let date = model.nextRun, model.autoRunning {

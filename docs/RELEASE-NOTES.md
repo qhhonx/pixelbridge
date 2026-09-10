@@ -1,9 +1,11 @@
-PixelBridge 0.1.0-beta.9 — let Google Photos determine cleanup eligibility.
+PixelBridge 0.1.0-beta.10 — show cleanup progress and return to Photos.
 
-- Fix cleanup stopping immediately after opening Google Photos when its home screen uses a different backup status label or omits the status banner.
-- Remove the requirement for all Google Photos uploads to finish. Its official device-cleanup flow selects safely backed-up copies even while other uploads continue.
-- Keep account binding, the explicit safe-backup confirmation, fresh checks before clicking, and pending-operation reconciliation. Never infer deletion eligibility from file age or PixelBridge transfer records.
-- Keep PixelBridge transfers paused during cleanup, then measure free space before resuming. Existing settings, account bindings and queue progress are retained.
+- Display each live cleanup stage in Backup Overview, the bottom status bar and Experiments: device readiness, opening Google Photos, verifying the account, checking eligible copies, releasing space, returning to Photos and verifying available space.
+- Show the percentage reported by Google Photos when available. Otherwise show an activity indicator, without fabricated percentage or stale photo-transfer progress.
+- Record stage transitions in the activity log without logging every percentage refresh. Clear transient progress after cancellation, failure or completion.
+- After confirmed cleanup, press the recognized Done button and verify the Photos home screen. A return-navigation failure is reported separately and does not repeat a completed cleanup.
+
+Existing settings, queue progress and cleanup safeguards are retained.
 
 Free macOS beta for Apple Silicon, macOS 14+.
 

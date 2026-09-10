@@ -87,6 +87,14 @@ final class CleanupXML: NSObject, XMLParserDelegate {
         return ["没有可释放的空间", "Nothing to free up"].contains(title.text)
     }
     var progress: Bool { node("free_up_space_progress_text") != nil }
+    var progressPercent: Double? {
+        guard let label = node("free_up_space_progress_text")?.text else { return nil }
+        let regex = try! NSRegularExpression(pattern: #"(?<![\d.\-])(\d{1,3}(?:\.\d+)?)\s*[%％]"#)
+        let matches = regex.matches(in: label, range: NSRange(label.startIndex..., in: label))
+        guard matches.count == 1, let range = Range(matches[0].range(at: 1), in: label),
+              let value = Double(label[range]), (0...100).contains(value) else { return nil }
+        return value
+    }
     var confirmation: CleanupNode? {
         guard let tip = node("safetyTip"), let button = node("free_up_button"), button.point != nil,
               tip.text.hasPrefix("这些内容已按照您选择的画质安全备份。") || tip.text.hasPrefix("These items have been safely backed up"),
@@ -94,6 +102,30 @@ final class CleanupXML: NSObject, XMLParserDelegate {
               button.text.contains(where: { $0.isNumber }) else { return nil }
         return button
     }
+}
+
+enum CleanupProgress: Equatable {
+    case checkingDevice, openingPhotos, checkingAccount, openingCleanup, confirming, releasing(Double?), verifyingSpace, returningHome, returnHomeFailed
+    var message: Message {
+        switch self {
+        case .checkingDevice: return Message(.cleanup_stage_device)
+        case .openingPhotos: return Message(.cleanup_stage_open)
+        case .checkingAccount: return Message(.cleanup_stage_account)
+        case .openingCleanup: return Message(.cleanup_stage_offer)
+        case .confirming: return Message(.cleanup_stage_confirm)
+        case .releasing(let percent):
+            if let percent { return Message(.cleanup_stage_percent, String(format: "%.0f", percent)) }
+            return Message(.cleanup_stage_release)
+        case .verifyingSpace: return Message(.cleanup_stage_verify)
+        case .returningHome: return Message(.cleanup_stage_home)
+        case .returnHomeFailed: return Message(.cleanup_home_failed)
+        }
+    }
+    var fraction: Double? {
+        if case .releasing(let percent) = self, let percent { return percent / 100 }
+        return nil
+    }
+    var isReleasing: Bool { if case .releasing = self { return true }; return false }
 }
 
 enum CleanupResult {
@@ -177,21 +209,26 @@ enum CleanupResult {
     // Probe the complete navigation path before binding the account. Never tap the
     // free-up button during setup; an empty page validates navigation only. Runtime
     // relies on Google Photos to select eligible copies on its safe-backup confirmation.
-    func inspectAccount() async throws -> String {
+    func inspectAccount(progress: (CleanupProgress) -> Void = { _ in }) async throws -> String {
+        progress(.checkingDevice)
         try await preflight()
+        progress(.openingPhotos)
         var page = try await open()
         if page.progress { throw CleanupIssue.pending }
         if page.completed, let done = page.node("done_button") { try await tap(done); page = try await snapshot() }
         if page.account == nil, let close = page.node("og_bento_toolbar_close_button") ?? page.node("close_button") {
             try await tap(close); page = try await snapshot()
         }
+        progress(.checkingAccount)
         guard let account = page.account, let disc = page.node("selected_account_disc") else { throw CleanupIssue.page }
         try await tap(disc)
+        progress(.openingCleanup)
         page = try await snapshot()
         guard let entry = page.menuButton() else { throw CleanupIssue.page }
         // The official device-cleanup flow selects only safely backed-up copies.
         // Global backup status (including ongoing uploads) does not gate eligibility.
         try await tap(entry)
+        progress(.confirming)
         page = try await snapshot()
         guard page.empty || page.confirmation != nil else { throw CleanupIssue.page }
         return account
@@ -204,28 +241,33 @@ enum CleanupResult {
         return free * 1024
     }
     // pending is persisted before clicking, including ambiguous tap failures or app restarts.
-    func run(account: String, pending: Bool, started: () -> Void, finished: () -> Void) async throws -> CleanupResult {
+    func run(account: String, pending: Bool, progress: (CleanupProgress) -> Void = { _ in }, started: () -> Void, finished: () -> Void) async throws -> CleanupResult {
+        progress(.checkingDevice)
         try await preflight()
         let before = try await freeBytes()
+        progress(.openingPhotos)
         var page = try await open()
         if pending && (page.progress || page.completed) {
-            return try await waitForCompletion(before: before, finished: finished)
+            return try await waitForCompletion(before: before, progress: progress, finished: finished)
         }
         if page.progress { throw CleanupIssue.pending }
         if page.completed, let done = page.node("done_button") { try await tap(done); page = try await snapshot() }
         if page.account == nil, let close = page.node("og_bento_toolbar_close_button") ?? page.node("close_button") {
             try await tap(close); page = try await snapshot()
         }
+        progress(.checkingAccount)
         guard page.account == account else { throw CleanupIssue.account }
         guard let disc = page.node("selected_account_disc") else { throw CleanupIssue.page }
         try await tap(disc)
+        progress(.openingCleanup)
         page = try await snapshot()
         guard let entry = page.menuButton() else { throw CleanupIssue.page }
         // The official device-cleanup flow selects only safely backed-up copies.
         // Global backup status (including ongoing uploads) does not gate eligibility.
         try await tap(entry)
+        progress(.confirming)
         page = try await snapshot()
-        if pending && page.progress { return try await waitForCompletion(before: before, finished: finished) }
+        if pending && page.progress { return try await waitForCompletion(before: before, progress: progress, finished: finished) }
         if page.empty {
             if pending { finished(); return .reconciled }
             throw CleanupIssue.nothing
@@ -241,9 +283,24 @@ enum CleanupResult {
         guard let confirm = page.confirmation else { throw CleanupIssue.page }
         started()
         try await tap(confirm)
-        return try await waitForCompletion(before: before, finished: finished)
+        return try await waitForCompletion(before: before, progress: progress, finished: finished)
     }
-    private func waitForCompletion(before: Int64, finished: () -> Void) async throws -> CleanupResult {
+    private func returnToPhotos(from page: CleanupXML, progress: (CleanupProgress) -> Void) async throws {
+        progress(.returningHome)
+        do {
+            guard let done = page.node("done_button") else { throw CleanupIssue.page }
+            try await tap(done)
+            let home = try await snapshot()
+            guard home.account != nil else { throw CleanupIssue.page }
+        } catch is CancellationError { throw CancellationError() }
+        catch {
+            // Cleanup was already confirmed and measured. Navigation failure must
+            // not turn a completed cleanup into an uncertain destructive operation.
+            progress(.returnHomeFailed)
+        }
+    }
+    private func waitForCompletion(before: Int64, progress: (CleanupProgress) -> Void, finished: () -> Void) async throws -> CleanupResult {
+        progress(.releasing(nil))
         // UI Automator may time out while Google Photos animates. Retry fresh reads;
         // free-space growth alone is never a completion signal.
         for _ in 0..<40 {
@@ -251,11 +308,14 @@ enum CleanupResult {
             do {
                 let page = try await snapshot()
                 if page.completed {
+                    progress(.verifyingSpace)
                     let after = try await freeBytes()
                     finished()
+                    try await returnToPhotos(from: page, progress: progress)
                     return .completed(reclaimed: max(0, after - before))
                 }
                 guard page.progress else { throw CleanupIssue.pending }
+                progress(.releasing(page.progressPercent))
             } catch is CancellationError { throw CancellationError() }
             catch CleanupIssue.unstable { /* Animation: retry with a fresh path. */ }
             catch { throw error }

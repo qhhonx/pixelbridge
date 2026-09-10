@@ -43,6 +43,8 @@ final class BridgeModel: ObservableObject {
     }
     @Published private(set) var pixelCleanupEnabled = UserDefaults.standard.bool(forKey: "pixelCleanupEnabled")
     @Published private(set) var cleanupMessage = Message(.cleanup_disabled)
+    @Published private(set) var cleanupProgress: CleanupProgress?
+    var activityDescription: String { cleanupProgress?.message.text ?? (currentName.isEmpty ? detail.text : currentName) }
     private var cleanupBinding = UserDefaults.standard.dictionary(forKey: "pixelCleanupBinding") as? [String: String] ?? [:]
     private var cleanupPendingDevice = UserDefaults.standard.string(forKey: "pixelCleanupPendingDevice") ?? ""
     private var cleanupTransferBytes = (UserDefaults.standard.object(forKey: "pixelCleanupTransferBytes") as? NSNumber)?.int64Value ?? 0
@@ -523,7 +525,7 @@ final class BridgeModel: ObservableObject {
         guard worker == nil, !busy, !scanning, !installing, !pausing else { return }
         let task = Task { @MainActor in
             busy = true; status = Message(.cleanup_checking); cleanupMessage = status
-            defer { busy = false }
+            defer { busy = false; cleanupProgress = nil }
             do {
                 guard cleanupPendingDevice.isEmpty else { throw CleanupIssue.pending }
                 try ensureDirectory(state)
@@ -532,7 +534,7 @@ final class BridgeModel: ObservableObject {
                 await refreshDevice()
                 guard !adbPath.isEmpty, !selectedDevice.isEmpty else { throw CleanupIssue.waiting }
                 let serial = selectedDevice
-                let account = try await PixelCleanup(adb: adbPath, serial: serial).inspectAccount()
+                let account = try await PixelCleanup(adb: adbPath, serial: serial).inspectAccount(progress: updateCleanupProgress)
                 try Task.checkCancellation()
                 guard serial == selectedDevice else { throw CleanupIssue.account }
                 if cleanupBinding["device"] != serial || cleanupBinding["account"] != account { clearCleanupHold() }
@@ -565,11 +567,22 @@ final class BridgeModel: ObservableObject {
         UserDefaults.standard.removeObject(forKey: "pixelCleanupHoldDevice")
         UserDefaults.standard.removeObject(forKey: "pixelCleanupTransferBytes")
     }
+    private func updateCleanupProgress(_ progress: CleanupProgress) {
+        let previous = cleanupProgress
+        cleanupProgress = progress
+        status = Message(progress.isReleasing ? .cleanup_running : .cleanup_checking)
+        detail = progress.message
+        cleanupMessage = progress.message
+        // Percentage refreshes update the UI, not the persistent log on every poll.
+        if previous != progress && !(previous?.isReleasing == true && progress.isReleasing) { log(progress.message.text) }
+    }
     private func cleanupNotice(_ message: Message) {
         cleanupMessage = message
+        detail = message
         log(message.text)
     }
     private func checkPixelCleanup(force: Bool = false) async throws {
+        defer { cleanupProgress = nil }
         #if PIXELBRIDGE_TESTING
         if let testCleanup { try await testCleanup(); return }
         #endif
@@ -622,7 +635,7 @@ final class BridgeModel: ObservableObject {
             guard temperature <= Double(maxTemperatureC) else {
                 throw fail(Message(.cleanup_temperature, String(format: "%.1f", temperature), String(maxTemperatureC)))
             }
-            let result = try await adapter.run(account: account, pending: pending, started: {
+            let result = try await adapter.run(account: account, pending: pending, progress: updateCleanupProgress, started: {
                 self.cleanupPendingDevice = serial
                 UserDefaults.standard.set(serial, forKey: "pixelCleanupPendingDevice")
                 // Persist immediately before the cleanup click, not during preflight.
@@ -640,6 +653,7 @@ final class BridgeModel: ObservableObject {
             case .reconciled:
                 cleanupNotice(Message(.cleanup_reconciled))
             }
+            updateCleanupProgress(.verifyingSpace)
             let after = try await adapter.freeBytes()
             guard after >= threshold else {
                 throw fail(Message(.cleanup_space_low, ByteCountFormatter.string(fromByteCount: after, countStyle: .file), ByteCountFormatter.string(fromByteCount: threshold, countStyle: .file)))
