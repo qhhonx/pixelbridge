@@ -711,7 +711,7 @@ final class BridgeModel: ObservableObject {
         }
         cacheBytes = await measuredCacheBytes()
         guard cacheBytes + cacheExtraBytes <= Int64(cacheGB) * 1_000_000_000 else { throw fail(Message(.error_cache_budget, String(describing: cacheGB))) }
-        guard diskFree(bridgeRoot) > Int64(macReserveGB) * 1_000_000_000 + cacheExtraBytes else { throw fail(Message(.error_mac_storage, String(describing: macReserveGB))) }
+        guard diskFree(state.deletingLastPathComponent()) > Int64(macReserveGB) * 1_000_000_000 + cacheExtraBytes else { throw fail(Message(.error_mac_storage, String(describing: macReserveGB))) }
     }
     private func process(_ item: LibraryItem, prior: QueueRow?) async throws {
         let delivery = try await preparationGate.withPermit {
@@ -849,7 +849,7 @@ final class BridgeModel: ObservableObject {
         return await Task.detached(priority: .utility) { folderBytes(folder) }.value
     }
     private func availableBudget() async -> Int64 {
-        max(0, min(Int64(cacheGB) * 1_000_000_000 - (await measuredCacheBytes()), diskFree(bridgeRoot) - Int64(macReserveGB) * 1_000_000_000))
+        max(0, min(Int64(cacheGB) * 1_000_000_000 - (await measuredCacheBytes()), diskFree(state.deletingLastPathComponent()) - Int64(macReserveGB) * 1_000_000_000))
     }
     private func hashFile(_ url: URL) async throws -> String {
         guard let hash = value("sha256", try await invoke(["hash", "--file", url.path])) else { throw fail(Message(.error_hash_failed)) }; return hash
