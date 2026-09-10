@@ -301,7 +301,7 @@ func photoDeliveryState(phase: String?, retry: Bool, active: Bool) -> TextKey {
 func isTemporaryInterruption(_ error: Error, depth: Int = 0) -> Bool {
     guard depth < 8 else { return false }
     if let failure = error as? BridgeFailure,
-       [.error_pixel_temperature, .error_pixel_storage, .error_pixel_disconnected,
+       [.cleanup_draining, .error_pixel_temperature, .error_pixel_storage, .error_pixel_disconnected,
         .error_pixel_waiting, .error_pixel_generation, .error_cache_budget, .error_mac_storage,
         .error_download_budget, .error_icloud_timeout, .error_timeout].contains(failure.message.key) { return true }
     let ns = error as NSError

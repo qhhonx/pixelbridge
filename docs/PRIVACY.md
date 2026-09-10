@@ -8,4 +8,4 @@ Sparkle checks an HTTPS update feed on the product website and downloads updates
 
 The website uses a first-party language-preference cookie when a language is explicitly chosen, and follows browser language otherwise. There is no advertising or analytics integration. Hosting providers may keep service/security logs.
 
-The app never deletes Apple Photos originals or Pixel photos automatically. Mac staging cleanup verifies the Pixel copy; that check is not evidence of Google cloud backup.
+The app never deletes Apple Photos originals. The optional automatic Pixel cleanup experiment operates Google Photos’ official device-cleanup UI; Google Photos decides which backed-up device copies are eligible, including copies outside PixelBridge. PixelBridge stores the selected device, an account fingerprint, pending cleanup state and recovery-space budget locally. Mac staging cleanup verifies the Pixel copy; that check is not evidence of Google cloud backup.

@@ -79,7 +79,8 @@ import Foundation
         print("PASS: setup probes confirmation or empty state across versions without cleaning; unknown and cloud-storage pages are rejected")
         version = "8.0.0.fixture"
         pages = [home, menu, confirm, confirm, progress, complete]; calls = []
-        let reclaimed = try await adapter.run(account: account, pending: false, started: { started += 1 }, finished: { finished += 1 })
+        let result = try await adapter.run(account: account, pending: false, started: { started += 1 }, finished: { finished += 1 })
+        guard case .completed(let reclaimed) = result else { preconditionFailure("Missing completion") }
         precondition(started == 1 && finished == 1 && taps() == 3 && reclaimed == 16_000_000 * 1024)
         let paths = calls.filter { $0.starts(with: ["shell", "uiautomator"]) }.compactMap(\.last)
         precondition(paths.count == Set(paths).count)

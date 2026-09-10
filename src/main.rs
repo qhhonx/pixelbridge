@@ -636,14 +636,18 @@ fn device_status(
         storage_command.args(["shell", "df", "-k", "/sdcard"]),
         "read Pixel storage",
     )?)?;
-    let available_kb = storage
+    let available_kib = storage
         .lines()
         .filter(|line| !line.trim().is_empty())
         .next_back()
         .and_then(|line| line.split_whitespace().nth(3))
-        .and_then(|value| value.parse::<f64>().ok())
+        .and_then(|value| value.parse::<u64>().ok())
         .context("could not parse Pixel free storage")?;
-    let free_gb = available_kb / 1_000_000.0;
+    // Android df -k reports 1024-byte blocks. Match the cleanup adapter exactly.
+    let free_bytes = available_kib
+        .checked_mul(1024)
+        .context("Pixel free storage overflow")?;
+    let free_gb = free_bytes as f64 / 1_000_000_000.0;
     let safe = temperature_c <= max_temperature_c && free_gb >= min_free_gb;
     println!(
         "{}",
@@ -652,6 +656,7 @@ fn device_status(
             "battery_percent": level,
             "temperature_c": temperature_c,
             "free_gb": free_gb,
+            "free_bytes": free_bytes,
             "safe_to_transfer": safe
         })
     );

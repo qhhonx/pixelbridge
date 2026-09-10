@@ -12,7 +12,7 @@ if args[0]=='get-state': print('offline' if mode=='offline' else 'device'); sys.
 if args[:3]==['shell','dumpsys','battery']:
  print('level: 90\ntemperature: '+('450' if mode=='hot' else '300')); sys.exit(0)
 if args[:3]==['shell','df','-k']:
- print('Filesystem 1K-blocks Used Available Use% Mounted\n/dev/fake 30000000 1000000 '+('1000' if mode=='full' else '18000000')+' 1% /sdcard'); sys.exit(0)
+ print('Filesystem 1K-blocks Used Available Use% Mounted\n/dev/fake 30000000 1000000 '+({'full':'1000','boundary':'1562500','below_boundary':'1562499'}.get(mode,'18000000'))+' 1% /sdcard'); sys.exit(0)
 if args[0]=='push':
  p=local(args[2]); p.parent.mkdir(parents=True,exist_ok=True); shutil.copyfile(args[1],p)
  if mode=='concurrent': time.sleep(0.2)
@@ -49,6 +49,11 @@ with tempfile.TemporaryDirectory(prefix='pixelbridge-scenarios-') as temp:
  push('scan_fail',False); before=(root/'calls').read_text().count("['push'"); push(); assert (root/'calls').read_text().count("['push'")==before
  for mode in ['normal','offline','hot','full']:
   run('device-status','--adb',str(adb),'--device','fixture',mode=mode,success=mode=='normal')
+ # df -k uses KiB: 1,562,500 blocks are exactly 1.6 decimal GB.
+ boundary=json.loads(run('device-status','--adb',str(adb),'--device','fixture','--min-free-gb','1.6',mode='boundary').stdout)
+ assert boundary['free_bytes']==1_600_000_000 and boundary['free_gb']==1.6 and boundary['safe_to_transfer']
+ run('device-status','--adb',str(adb),'--device','fixture','--min-free-gb','1.6',mode='below_boundary',success=False)
+ print('PASS: device admission and cleanup use identical KiB-to-byte conversion at the exact space boundary')
  # Identical contents under distinct asset filenames must have separate staging paths.
  twins=[root/'twin-a.jpg',root/'twin-b.jpg']
  for twin in twins: twin.write_bytes(b'identical-content')

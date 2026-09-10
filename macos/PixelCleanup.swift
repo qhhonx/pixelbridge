@@ -3,7 +3,7 @@ import Foundation
 // Capability-based adapter for the recognized Google Photos device-cleanup flow.
 // Unknown pages fail closed, regardless of version. Never infer cloud backup from the queue.
 enum CleanupIssue: Error {
-    case unsupported, locked, page, account, waiting, nothing, timeout, pending, unstable
+    case unsupported, locked, page, account, waiting, nothing, timeout, pending, unstable, foreground, backup
     var key: TextKey {
         switch self {
         case .unsupported: return .cleanup_unsupported
@@ -11,6 +11,8 @@ enum CleanupIssue: Error {
         case .page, .unstable: return .cleanup_page_unknown
         case .account: return .cleanup_account_changed
         case .waiting: return .cleanup_waiting
+        case .foreground: return .cleanup_foreground
+        case .backup: return .cleanup_backup_wait
         case .nothing: return .cleanup_nothing
         case .timeout: return .cleanup_timeout
         case .pending: return .cleanup_pending
@@ -95,6 +97,11 @@ final class CleanupXML: NSObject, XMLParserDelegate {
     }
 }
 
+enum CleanupResult {
+    case completed(reclaimed: Int64)
+    case reconciled
+}
+
 @MainActor final class PixelCleanup {
     nonisolated static let package = "com.google.android.apps.photos"
     typealias Command = ([String], Double) async throws -> String
@@ -120,7 +127,7 @@ final class CleanupXML: NSObject, XMLParserDelegate {
         try await wakeScreen()
         let activity = try await command(["shell", "dumpsys", "activity", "activities"], 20)
         guard let foreground = activity.split(separator: "\n").first(where: { $0.contains("mResumedActivity:") }),
-              [Self.package + "/", "com.google.android.apps.nexuslauncher/", "com.android.launcher3/"].contains(where: { foreground.contains($0) }) else { throw CleanupIssue.waiting }
+              [Self.package + "/", "com.google.android.apps.nexuslauncher/", "com.android.launcher3/"].contains(where: { foreground.contains($0) }) else { throw CleanupIssue.foreground }
     }
     private func wakeScreen() async throws {
         _ = try await command(["shell", "input", "keyevent", "KEYCODE_WAKEUP"], 10)
@@ -196,7 +203,7 @@ final class CleanupXML: NSObject, XMLParserDelegate {
         return free * 1024
     }
     // pending is persisted before clicking, including ambiguous tap failures or app restarts.
-    func run(account: String, pending: Bool, started: () -> Void, finished: () -> Void) async throws -> Int64 {
+    func run(account: String, pending: Bool, started: () -> Void, finished: () -> Void) async throws -> CleanupResult {
         try await preflight()
         let before = try await freeBytes()
         var page = try await open()
@@ -209,22 +216,24 @@ final class CleanupXML: NSObject, XMLParserDelegate {
             try await tap(close); page = try await snapshot()
         }
         guard page.account == account else { throw CleanupIssue.account }
-        guard page.backupComplete, let disc = page.node("selected_account_disc") else { throw CleanupIssue.waiting }
+        guard let disc = page.node("selected_account_disc") else { throw CleanupIssue.page }
+        guard page.backupComplete else { throw CleanupIssue.backup }
         try await tap(disc)
         page = try await snapshot()
-        guard page.backupComplete, let entry = page.menuButton() else { throw CleanupIssue.page }
+        guard let entry = page.menuButton() else { throw CleanupIssue.page }
+        guard page.backupComplete else { throw CleanupIssue.backup }
         try await tap(entry)
         page = try await snapshot()
         if pending && page.progress { return try await waitForCompletion(before: before, finished: finished) }
         if page.empty {
-            if pending { finished(); return 0 }
+            if pending { finished(); return .reconciled }
             throw CleanupIssue.nothing
         }
         guard page.confirmation != nil else { throw CleanupIssue.page }
         if pending {
             // The known official UI is offering a fresh action, so the previous operation
             // has ended. Reconcile without pressing that action a second time.
-            finished(); return 0
+            finished(); return .reconciled
         }
         // Re-read immediately before the only destructive UI action.
         page = try await snapshot()
@@ -233,7 +242,7 @@ final class CleanupXML: NSObject, XMLParserDelegate {
         try await tap(confirm)
         return try await waitForCompletion(before: before, finished: finished)
     }
-    private func waitForCompletion(before: Int64, finished: () -> Void) async throws -> Int64 {
+    private func waitForCompletion(before: Int64, finished: () -> Void) async throws -> CleanupResult {
         // UI Automator may time out while Google Photos animates. Retry fresh reads;
         // free-space growth alone is never a completion signal.
         for _ in 0..<40 {
@@ -243,7 +252,7 @@ final class CleanupXML: NSObject, XMLParserDelegate {
                 if page.completed {
                     let after = try await freeBytes()
                     finished()
-                    return max(0, after - before)
+                    return .completed(reclaimed: max(0, after - before))
                 }
                 guard page.progress else { throw CleanupIssue.pending }
             } catch is CancellationError { throw CancellationError() }

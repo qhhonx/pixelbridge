@@ -45,7 +45,10 @@ final class BridgeModel: ObservableObject {
     @Published private(set) var cleanupMessage = Message(.cleanup_disabled)
     private var cleanupBinding = UserDefaults.standard.dictionary(forKey: "pixelCleanupBinding") as? [String: String] ?? [:]
     private var cleanupPendingDevice = UserDefaults.standard.string(forKey: "pixelCleanupPendingDevice") ?? ""
-    private var lastCleanupAttempt = UserDefaults.standard.object(forKey: "pixelCleanupLastAttempt") as? Date ?? .distantPast
+    private var cleanupTransferBytes = (UserDefaults.standard.object(forKey: "pixelCleanupTransferBytes") as? NSNumber)?.int64Value ?? 0
+    private var cleanupHoldDevice = UserDefaults.standard.string(forKey: "pixelCleanupHoldDevice") ?? ""
+    // Old attempt timestamps included failed preflight checks; do not migrate them.
+    private var lastCleanupAction = UserDefaults.standard.object(forKey: "pixelCleanupLastAction") as? Date ?? .distantPast
     private var cleanupRequired = false
     @Published var completed = 0
     @Published var batchTotal = 0
@@ -86,8 +89,8 @@ final class BridgeModel: ObservableObject {
             if pixelReserveGB != bounded { pixelReserveGB = bounded }
         }
     }
-    // Shared by the experiment description and the actual cleanup trigger.
-    var pixelCleanupThresholdGB: Int { max(3, pixelReserveGB + 1) }
+    // One space floor for both transfer admission and automatic cleanup.
+    private var cleanupMinimumBytes: Int64 { Int64(pixelReserveGB) * 1_000_000_000 + max(0, cleanupTransferBytes) }
 
     @Published var maxTemperatureC = NumericPreference.maxTemperatureC.read() {
         didSet {
@@ -115,6 +118,9 @@ final class BridgeModel: ObservableObject {
     var testPrepareItem: ((LibraryItem, QueueRow?) async throws -> PreparedDelivery)?
     var testDeliverItem: ((PreparedDelivery) async throws -> Void)?
     var testCleanup: (() async throws -> Void)?
+    var testCleanupAdapter: PixelCleanup?
+    var testCleanupDeviceStatus: (() async throws -> String)?
+    var testSpaceGuard: ((Double) async throws -> Void)?
     var testReservedPixelBytes: Int64 { pixelReservations.values.reduce(0, +) }
     #endif
     private var retries: [String: RetryInfo] = [:]
@@ -123,6 +129,7 @@ final class BridgeModel: ObservableObject {
     init(root: URL = bridgeRoot) {
         state = root.appendingPathComponent("State"); staging = root.appendingPathComponent("Staging")
         if !cleanupPendingDevice.isEmpty { cleanupMessage = Message(.cleanup_pending) }
+        else if !cleanupHoldDevice.isEmpty && pixelCleanupEnabled { cleanupMessage = Message(.cleanup_holding) }
         else if pixelCleanupEnabled { cleanupMessage = Message(.cleanup_enabled) }
     }
     private var core: URL { Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("pixelbridge-core") }
@@ -435,11 +442,12 @@ final class BridgeModel: ObservableObject {
             if cleanupRequired && pixelCleanupEnabled && !Task.isCancelled {
                 attemptedCleanup = true
                 do { try await checkPixelCleanup(force: true) }
-                catch { cleanupMessage = cleanupFailure(error); log(cleanupMessage.text) }
+                catch { cleanupMessage = cleanupFailure(error) }
             }
             status = stopRequested ? Message(.status_paused) : Message(.status_waiting)
-            detail = stopRequested ? Message(.backup_paused) : (attemptedCleanup || error is CleanupIssue ? cleanupMessage : Message(error: error))
-            if !stopRequested { log(error.localizedDescription) }
+            let cleanupError = error is CleanupIssue || (error as? BridgeFailure)?.message.key?.rawValue.hasPrefix("cleanup_") == true
+            detail = stopRequested ? Message(.backup_paused) : (attemptedCleanup || cleanupError ? cleanupMessage : Message(error: error))
+            if !stopRequested && !attemptedCleanup && !cleanupError { log(error.localizedDescription) }
         }
     }
     private func executeItem(_ item: LibraryItem, prior: QueueRow?) async throws -> Bool {
@@ -501,12 +509,14 @@ final class BridgeModel: ObservableObject {
     private func cleanupFailure(_ error: Error) -> Message {
         if let issue = error as? CleanupIssue { return Message(issue.key) }
         if error is CancellationError { return Message(.cleanup_paused) }
+        if let failure = error as? BridgeFailure, failure.message.key != nil { return failure.message }
         return Message(.cleanup_connection_failed)
     }
     func disablePixelCleanup() {
         guard !busy else { return }
         pixelCleanupEnabled = false
         UserDefaults.standard.set(false, forKey: "pixelCleanupEnabled")
+        clearCleanupHold()
         cleanupMessage = Message(cleanupPendingDevice.isEmpty ? .cleanup_disabled : .cleanup_pending)
     }
     func enablePixelCleanup() async {
@@ -525,6 +535,7 @@ final class BridgeModel: ObservableObject {
                 let account = try await PixelCleanup(adb: adbPath, serial: serial).inspectAccount()
                 try Task.checkCancellation()
                 guard serial == selectedDevice else { throw CleanupIssue.account }
+                if cleanupBinding["device"] != serial || cleanupBinding["account"] != account { clearCleanupHold() }
                 cleanupBinding = ["device": serial, "account": account]
                 UserDefaults.standard.set(cleanupBinding, forKey: "pixelCleanupBinding")
                 pixelCleanupEnabled = true
@@ -538,55 +549,114 @@ final class BridgeModel: ObservableObject {
         }
         worker = task; await task.value; worker = nil; pausing = false
     }
+    private func holdForCleanup(extraBytes: Int64 = 0) {
+        guard !selectedDevice.isEmpty, cleanupHoldDevice.isEmpty || cleanupHoldDevice == selectedDevice else { return }
+        cleanupTransferBytes = max(cleanupTransferBytes, extraBytes)
+        UserDefaults.standard.set(cleanupTransferBytes, forKey: "pixelCleanupTransferBytes")
+        if cleanupHoldDevice.isEmpty {
+            cleanupHoldDevice = selectedDevice
+            UserDefaults.standard.set(selectedDevice, forKey: "pixelCleanupHoldDevice")
+            log(tr(.cleanup_holding))
+        }
+    }
+    private func clearCleanupHold() {
+        cleanupHoldDevice = ""
+        cleanupTransferBytes = 0
+        UserDefaults.standard.removeObject(forKey: "pixelCleanupHoldDevice")
+        UserDefaults.standard.removeObject(forKey: "pixelCleanupTransferBytes")
+    }
+    private func cleanupNotice(_ message: Message) {
+        cleanupMessage = message
+        log(message.text)
+    }
     private func checkPixelCleanup(force: Bool = false) async throws {
         #if PIXELBRIDGE_TESTING
         if let testCleanup { try await testCleanup(); return }
         #endif
         let pending = !cleanupPendingDevice.isEmpty
         guard pixelCleanupEnabled || pending else { return }
-        guard activeTransfers.isEmpty, pixelReservations.isEmpty else { throw CleanupIssue.waiting }
-        guard cleanupBinding["device"] == selectedDevice,
-              let account = cleanupBinding["account"], !account.isEmpty,
-              !pending || cleanupPendingDevice == selectedDevice else {
-            cleanupMessage = Message(.cleanup_account_changed); throw CleanupIssue.account
-        }
-        let serial = selectedDevice
-        let adapter = PixelCleanup(adb: adbPath, serial: serial)
-        // Start earlier than the hard stop and account for the user's chosen reserve.
-        let trigger = pixelCleanupThresholdGB
-        let available = try await adapter.freeBytes()
-        if !force && !pending && available >= Int64(trigger) * 1_000_000_000 { return }
-        if !pending && Date().timeIntervalSince(lastCleanupAttempt) < 600 {
-            cleanupMessage = Message(.cleanup_cooldown)
-            if !force && available > Int64(pixelReserveGB) * 1_000_000_000 { return }
-            throw CleanupIssue.waiting
-        }
-        lastCleanupAttempt = Date()
-        UserDefaults.standard.set(lastCleanupAttempt, forKey: "pixelCleanupLastAttempt")
-        cleanupRequired = false
-        status = Message(.cleanup_running); cleanupMessage = Message(.cleanup_running)
         do {
-            // Check temperature/connectivity even when low space is the reason for cleaning.
-            _ = try await invoke(["device-status", "--adb", adbPath, "--device", selectedDevice,
-                "--max-temperature-c", String(maxTemperatureC), "--min-free-gb", "0"])
-            let reclaimed = try await adapter.run(account: account, pending: pending, started: {
+            guard activeTransfers.isEmpty, pixelReservations.isEmpty else { throw fail(Message(.cleanup_draining)) }
+            guard cleanupBinding["device"] == selectedDevice,
+                  let account = cleanupBinding["account"], !account.isEmpty,
+                  cleanupHoldDevice.isEmpty || cleanupHoldDevice == selectedDevice,
+                  !pending || cleanupPendingDevice == selectedDevice else { throw CleanupIssue.account }
+            let serial = selectedDevice
+            let adapter: PixelCleanup
+            #if PIXELBRIDGE_TESTING
+            adapter = testCleanupAdapter ?? PixelCleanup(adb: adbPath, serial: serial)
+            #else
+            adapter = PixelCleanup(adb: adbPath, serial: serial)
+            #endif
+            if force || pending { holdForCleanup() }
+            let threshold = cleanupMinimumBytes
+            let available = try await adapter.freeBytes()
+            if available < threshold { holdForCleanup() }
+            // External/manual cleanup may restore space. An uncertain Google Photos
+            // operation must still be reconciled before any transfer is allowed.
+            if !pending && available >= threshold {
+                if !cleanupHoldDevice.isEmpty {
+                    clearCleanupHold()
+                    cleanupNotice(Message(.cleanup_space_restored, ByteCountFormatter.string(fromByteCount: available, countStyle: .file)))
+                }
+                return
+            }
+            let remaining = 600 - Date().timeIntervalSince(lastCleanupAction)
+            if !pending && remaining > 0 {
+                throw fail(Message(.cleanup_retry_after, String(Int(ceil(remaining / 60)))))
+            }
+            status = Message(.cleanup_checking)
+            cleanupNotice(Message(.cleanup_check_space, ByteCountFormatter.string(fromByteCount: available, countStyle: .file), ByteCountFormatter.string(fromByteCount: threshold, countStyle: .file)))
+            let metrics: String
+            #if PIXELBRIDGE_TESTING
+            if let testCleanupDeviceStatus { metrics = try await testCleanupDeviceStatus() }
+            else { metrics = try await invoke(["device-status", "--adb", adbPath, "--device", serial, "--max-temperature-c", "100", "--min-free-gb", "0"]) }
+            #else
+            metrics = try await invoke(["device-status", "--adb", adbPath, "--device", serial, "--max-temperature-c", "100", "--min-free-gb", "0"])
+            #endif
+            guard let values = try JSONSerialization.jsonObject(with: Data(metrics.utf8)) as? [String: Any],
+                  values["connected"] as? Bool == true,
+                  let temperature = values["temperature_c"] as? Double, temperature.isFinite else {
+                throw fail(Message(.cleanup_connection_failed))
+            }
+            guard temperature <= Double(maxTemperatureC) else {
+                throw fail(Message(.cleanup_temperature, String(format: "%.1f", temperature), String(maxTemperatureC)))
+            }
+            let result = try await adapter.run(account: account, pending: pending, started: {
                 self.cleanupPendingDevice = serial
-                UserDefaults.standard.set(self.cleanupPendingDevice, forKey: "pixelCleanupPendingDevice")
+                UserDefaults.standard.set(serial, forKey: "pixelCleanupPendingDevice")
+                // Persist immediately before the cleanup click, not during preflight.
+                self.lastCleanupAction = Date()
+                UserDefaults.standard.set(self.lastCleanupAction, forKey: "pixelCleanupLastAction")
+                self.status = Message(.cleanup_running)
+                self.cleanupNotice(Message(.cleanup_action_started))
             }, finished: {
                 self.cleanupPendingDevice = ""
                 UserDefaults.standard.removeObject(forKey: "pixelCleanupPendingDevice")
             })
-            cleanupMessage = Message(.cleanup_finished, ByteCountFormatter.string(fromByteCount: reclaimed, countStyle: .file))
-            log(cleanupMessage.text)
-            await refreshDevice()
-        } catch {
-            cleanupMessage = cleanupFailure(error)
-            if !force && !pending, let issue = error as? CleanupIssue,
-               [.nothing, .waiting].contains(issue),
-               (try? await adapter.freeBytes()) ?? 0 > Int64(pixelReserveGB) * 1_000_000_000 {
-                return
+            switch result {
+            case .completed(let reclaimed):
+                cleanupNotice(Message(.cleanup_finished, ByteCountFormatter.string(fromByteCount: reclaimed, countStyle: .file)))
+            case .reconciled:
+                cleanupNotice(Message(.cleanup_reconciled))
             }
-            throw error
+            let after = try await adapter.freeBytes()
+            guard after >= threshold else {
+                throw fail(Message(.cleanup_space_low, ByteCountFormatter.string(fromByteCount: after, countStyle: .file), ByteCountFormatter.string(fromByteCount: threshold, countStyle: .file)))
+            }
+            clearCleanupHold()
+            cleanupNotice(Message(.cleanup_space_restored, ByteCountFormatter.string(fromByteCount: after, countStyle: .file)))
+            #if PIXELBRIDGE_TESTING
+            if testCleanupAdapter == nil { await refreshDevice() }
+            #else
+            await refreshDevice()
+            #endif
+        } catch {
+            let message = cleanupFailure(error)
+            cleanupNotice(message)
+            if error is CancellationError { throw CancellationError() }
+            // Carry the same concrete reason into the overview and the log.
+            throw fail(message)
         }
     }
     private func prepareBatch() async throws {
@@ -601,17 +671,29 @@ final class BridgeModel: ObservableObject {
         try Task.checkCancellation()
         try await refreshQueue()
     }
+    private func checkDeviceSpace(minimumGB: Double) async throws {
+        #if PIXELBRIDGE_TESTING
+        if let testSpaceGuard { try await testSpaceGuard(minimumGB); return }
+        #endif
+        let product = try await processOutput(URL(fileURLWithPath: adbPath), ["-s", selectedDevice, "shell", "getprop", "ro.product.device"], timeout: 30).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard ["marlin", "sailfish"].contains(product) else { throw fail(Message(.error_pixel_generation)) }
+        _ = try await invoke(["device-status", "--adb", adbPath, "--device", selectedDevice,
+            "--max-temperature-c", String(maxTemperatureC), "--min-free-gb", String(minimumGB)])
+    }
     private func guardDevice(extraBytes: Int64 = 0, cacheExtraBytes: Int64 = 0) async throws {
         try Task.checkCancellation()
+        if (pixelCleanupEnabled && !cleanupHoldDevice.isEmpty) || !cleanupPendingDevice.isEmpty {
+            cleanupRequired = true
+            throw fail(Message(.cleanup_draining))
+        }
         #if PIXELBRIDGE_TESTING
         if let testGuardDevice { try await testGuardDevice(); return }
         #endif
         guard !selectedDevice.isEmpty, !adbPath.isEmpty else { throw fail(Message(.error_pixel_waiting)) }
-        let product = try await processOutput(URL(fileURLWithPath: adbPath), ["-s", selectedDevice, "shell", "getprop", "ro.product.device"], timeout: 30).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard ["marlin", "sailfish"].contains(product) else { throw fail(Message(.error_pixel_generation)) }
-        let minimumGB = Double(pixelReserveGB) + Double(extraBytes + pixelReservations.values.reduce(0, +)) / 1_000_000_000
+        let transferBytes = extraBytes + pixelReservations.values.reduce(0, +)
+        let minimumGB = Double(pixelReserveGB) + Double(transferBytes) / 1_000_000_000
         do {
-            _ = try await invoke(["device-status", "--adb", adbPath, "--device", selectedDevice, "--max-temperature-c", String(maxTemperatureC), "--min-free-gb", String(minimumGB)])
+            try await checkDeviceSpace(minimumGB: minimumGB)
         } catch {
             let message = error.localizedDescription
             if message.contains("Pixel is too warm") {
@@ -619,6 +701,7 @@ final class BridgeModel: ObservableObject {
             }
             if message.contains("below the batch reserve") {
                 cleanupRequired = true
+                if pixelCleanupEnabled { holdForCleanup(extraBytes: transferBytes) }
                 throw fail(Message(.error_pixel_storage))
             }
             if message.contains("Pixel is not ready") || message.contains("device offline") || message.contains("not found") {

@@ -4,7 +4,7 @@ import Foundation
     @MainActor static func main() {
         // The standalone test executable has its own defaults domain; never launch a backup.
         let defaults = UserDefaults.standard
-        let cleanupKeys = ["pixelCleanupEnabled", "pixelCleanupBinding", "pixelCleanupPendingDevice"]
+        let cleanupKeys = ["pixelCleanupEnabled", "pixelCleanupBinding", "pixelCleanupPendingDevice", "pixelCleanupHoldDevice", "pixelCleanupTransferBytes"]
         let savedCleanup = cleanupKeys.map { ($0, defaults.object(forKey: $0)) }
         defer {
             for (key, value) in savedCleanup {

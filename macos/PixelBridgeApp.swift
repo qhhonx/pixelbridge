@@ -596,7 +596,7 @@ struct ContentView: View {
                             .padding(.horizontal, 12).padding(.vertical, 6)
                             .background(Palette.filter, in: Capsule())
                     }
-                    Text(tr(.cleanup_description, String(model.pixelCleanupThresholdGB))).font(.system(size: 14))
+                    Text(tr(.cleanup_description, String(model.pixelReserveGB))).font(.system(size: 14))
                         .foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
                     Divider()
                     Label(model.cleanupMessage.text, systemImage: "info.circle")
@@ -692,7 +692,7 @@ struct ContentView: View {
                         NumberControl(title: tr(.settings_mac_reserve_control), value: $model.macReserveGB, range: NumericPreference.macReserveGB.range, unit: "GB").disabled(model.busy)
                     }
                     Divider()
-                    PreferenceRow(title: tr(.settings_pixel_reserve)) {
+                    PreferenceRow(title: tr(.settings_pixel_reserve), detail: tr(.settings_pixel_reserve_description)) {
                         NumberControl(title: tr(.settings_pixel_reserve_control), value: $model.pixelReserveGB, range: NumericPreference.pixelReserveGB.range, unit: "GB").disabled(model.busy)
                     }
                     Divider()

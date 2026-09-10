@@ -1,6 +1,19 @@
 import Foundation
 
 enum TextKey: String, CaseIterable {
+    case cleanup_action_started
+    case cleanup_backup_wait
+    case cleanup_check_space
+    case cleanup_draining
+    case cleanup_foreground
+    case cleanup_holding
+    case cleanup_reconciled
+    case cleanup_retry_after
+    case cleanup_space_low
+    case cleanup_space_restored
+    case cleanup_temperature
+    case settings_pixel_reserve_description
+
     case nav_experiments
     case experiments_heading
     case experiments_description
