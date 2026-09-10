@@ -20,7 +20,7 @@ xcrun swiftc -O -whole-module-optimization -parse-as-library \
   -debug-prefix-map "$project_dir=/pixelbridge" \
   -framework SwiftUI -framework Photos -framework AppKit -framework ServiceManagement \
   -F .build-cache/sparkle -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
-  macos/Localization.swift macos/BridgeSupport.swift macos/BridgeModel.swift \
+  macos/Localization.swift macos/BridgeSupport.swift macos/PixelCleanup.swift macos/BridgeModel.swift \
   macos/PhotoGrid.swift macos/AppUpdater.swift macos/PixelBridgeApp.swift \
   -o "$contents/MacOS/PixelBridge"
 cp macos/Resources/*.json "$contents/Resources/"

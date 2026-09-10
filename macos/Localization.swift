@@ -1,6 +1,28 @@
 import Foundation
 
 enum TextKey: String, CaseIterable {
+    case cleanup_title
+    case cleanup_description
+    case cleanup_scope_notice
+    case cleanup_enable
+    case cleanup_disable
+    case cleanup_disabled
+    case cleanup_enabled
+    case cleanup_checking
+    case cleanup_running
+    case cleanup_finished
+    case cleanup_unsupported
+    case cleanup_locked
+    case cleanup_page_unknown
+    case cleanup_account_changed
+    case cleanup_waiting
+    case cleanup_nothing
+    case cleanup_timeout
+    case cleanup_pending
+    case cleanup_paused
+    case cleanup_connection_failed
+    case cleanup_cooldown
+
     case updates_title
     case updates_description
     case updates_check

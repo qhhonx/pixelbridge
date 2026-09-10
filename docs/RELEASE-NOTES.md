@@ -1,13 +1,14 @@
-PixelBridge 0.1.0-beta.4 — file sizes, task progress and bounded concurrency.
+PixelBridge 0.1.0-beta.5 — experimental automatic Pixel space cleanup.
 
-- Restore photo-library scroll positions when returning from another page, with separate positions per media filter and photo-identity anchors across new arrivals.
-- Show measured delivery sizes in the task list. Sizes include the motion track and remain in SQLite after Mac cache cleanup. Older tasks without size records display a dash.
-- Show per-task download, preparation, transfer and verification stages with an activity indicator. Stage indicators are not byte-completion percentages or Google Photos cloud-upload progress.
-- Configure 1–3 concurrent tasks in Preferences (default 1). Preparation stays sequential to bound memory and Mac cache use; Pixel transfers can overlap. Pause backup before changing the setting.
-- Reserve space for all in-flight Pixel files together. Pause cancels all workers; shared temporary failures retain prepared progress for automatic recovery.
-- Isolate temporary paths for identical-content photos with different destination filenames.
+- Add an opt-in “Check and enable” setup in Preferences. It verifies the connected Pixel and binds a fingerprint of the Google Photos account without deleting files.
+- During backup, attempt Google's “Free up space on this device” below 3 GB or the configured Pixel reserve plus 1 GB, whichever is higher. Stop concurrent transfers before cleanup and resume through the existing scheduler after completion.
+- Use fresh UI trees, exact control identifiers, backup-complete and safety text checks. Unknown screens, changed accounts, secure locks, and unsupported versions stop the flow. No direct photo-folder deletion or private Google API is used.
+- Persist uncertain cleanup across cancellation/restart. Observe or reconcile it without starting a duplicate operation. Require Google Photos completion and remeasure available space; keep delivery records unchanged.
+- The first compatibility adapter targets Android 10 on original Pixel/Pixel XL and Google Photos 7.91.0.973540846. Chinese was checked on-device; English selectors have fixture coverage. Other builds require compatibility validation.
 
-Includes beta.2 recovery and filtering and beta.3 empty-state layout fixes. This setting controls Mac-to-Pixel work, not Google Photos uploads. Actual throughput depends on USB, Pixel storage and iCloud downloads.
+Enable under Preferences → Auto-free Pixel space after pausing backup. This is intended for a dedicated backup phone: Google's cleanup can remove eligible backed-up device copies outside PixelBridge too. A secure lock requires manual unlocking. Pause stops PixelBridge work, but cleanup already started in Google Photos may continue. There is a 10-minute interval between new cleanup attempts.
+
+Includes beta.4 task sizes, stage progress, concurrency and gallery scroll restoration.
 
 Free macOS beta for Apple Silicon, macOS 14+.
 

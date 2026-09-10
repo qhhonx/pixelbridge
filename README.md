@@ -74,3 +74,13 @@ See [architecture](docs/ARCHITECTURE.md), [localization](docs/LOCALIZATION.md), 
 ## License
 
 Project code is MIT licensed. Third-party software retains its own licenses; see [notices](THIRD_PARTY_NOTICES.md). PixelBridge is an independent project, not affiliated with Apple or Google. Product names and logos belong to their respective owners.
+
+### Automatic Pixel space cleanup (experimental)
+
+In Preferences, pause backup and choose **Check and enable** under **Auto-free Pixel space**. This reads the connected device and the current Google Photos account, stores only an account fingerprint, and does not clean during setup. It is off by default and must be enabled separately on each Mac.
+
+During backup, PixelBridge checks for low space (below 3 GB or the Pixel reserve plus 1 GB, whichever is higher), waits for its transfers to stop, and operates Google Photos’ **Free up space on this device**. It requires the recognized backup-complete and safety messages. After Google Photos confirms completion, PixelBridge remeasures space and resumes through its normal scheduler. Completed transfer records remain intact. No direct deletion of photo folders is performed.
+
+The current adapter targets Android 10 on original Pixel/Pixel XL with Google Photos **7.91.0.973540846**. Chinese navigation was tested on-device; English selectors are covered by fixtures. Unsupported builds and unknown pages stop instead of guessing. A secure lock must be unlocked manually. An active app other than Photos or the launcher delays cleanup. UI inspection failures never reuse an older XML dump.
+
+Use a dedicated backup phone: Google Photos may also clean eligible backed-up files outside PixelBridge’s folder. Google decides eligibility and may retain recent photos. The feature does not independently prove every cloud item or motion track is available. Pause cancels PixelBridge, but an operation already accepted by Google Photos can continue; uncertain completion is saved and checked before further transfers. New cleanup attempts are separated by 10 minutes.

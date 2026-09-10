@@ -631,6 +631,17 @@ struct ContentView: View {
                     Text(tr(.settings_resume_notice)).font(.system(size: 12)).foregroundStyle(Palette.muted)
                 }
                 Surface {
+                    PreferenceRow(title: tr(.cleanup_title), detail: tr(.cleanup_description)) {
+                        if model.pixelCleanupEnabled {
+                            Button(tr(.cleanup_disable)) { model.disablePixelCleanup() }.buttonStyle(ActionStyle()).disabled(model.busy)
+                        } else {
+                            Button(tr(.cleanup_enable)) { Task { await model.enablePixelCleanup() } }.buttonStyle(ActionStyle()).disabled(model.busy)
+                        }
+                    }
+                    Text(model.cleanupMessage.text).font(.system(size: 12)).foregroundStyle(Palette.muted)
+                    Text(tr(.cleanup_scope_notice)).font(.system(size: 12)).foregroundStyle(Palette.muted)
+                }
+                Surface {
                     Label(tr(.settings_cache_title), systemImage: "internaldrive").font(.system(size: 16, weight: .medium))
                     PreferenceRow(title: tr(.settings_cache_limit), detail: tr(.cache_used, ByteCountFormatter.string(fromByteCount: model.cacheBytes, countStyle: .file))) {
                         NumberControl(title: tr(.settings_cache_limit), value: $model.cacheGB, range: 2...200, unit: "GB").disabled(model.busy)
