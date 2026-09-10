@@ -1,6 +1,13 @@
 import Foundation
 
 enum TextKey: String, CaseIterable {
+    case nav_experiments
+    case experiments_heading
+    case experiments_description
+    case experiments_pause_notice
+    case experiment_enabled
+    case experiment_disabled
+    case cleanup_recheck
     case cleanup_title
     case cleanup_description
     case cleanup_scope_notice

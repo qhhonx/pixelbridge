@@ -4,6 +4,25 @@ import Foundation
     @MainActor static func main() {
         // The standalone test executable has its own defaults domain; never launch a backup.
         let defaults = UserDefaults.standard
+        let cleanupKeys = ["pixelCleanupEnabled", "pixelCleanupBinding", "pixelCleanupPendingDevice"]
+        let savedCleanup = cleanupKeys.map { ($0, defaults.object(forKey: $0)) }
+        defer {
+            for (key, value) in savedCleanup {
+                if let value { defaults.set(value, forKey: key) }
+                else { defaults.removeObject(forKey: key) }
+            }
+        }
+        let binding = ["device": "fixture-pixel", "account": "fixture-fingerprint"]
+        defaults.set(true, forKey: "pixelCleanupEnabled")
+        defaults.set(binding, forKey: "pixelCleanupBinding")
+        defaults.set("fixture-pixel", forKey: "pixelCleanupPendingDevice")
+        let upgraded = BridgeModel()
+        precondition(upgraded.pixelCleanupEnabled)
+        precondition(defaults.dictionary(forKey: "pixelCleanupBinding") as? [String: String] == binding)
+        upgraded.disablePixelCleanup()
+        precondition(!BridgeModel().pixelCleanupEnabled)
+        precondition(defaults.string(forKey: "pixelCleanupPendingDevice") == "fixture-pixel")
+        print("PASS: existing cleanup opt-in and binding survive upgrade; disabling preserves pending cleanup")
         let savedReclaim = defaults.object(forKey: "autoReclaimCache")
         let saved = Dictionary(uniqueKeysWithValues: NumericPreference.allCases.map { ($0.rawValue, defaults.object(forKey: $0.rawValue)) })
         defer {

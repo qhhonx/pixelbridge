@@ -3,7 +3,7 @@ import Photos
 import SwiftUI
 
 private enum Page: String, CaseIterable, Identifiable {
-    case library, overview, tasks, device, settings
+    case library, overview, tasks, device, settings, experiments
     var title: String { tr(TextKey(rawValue: "nav_" + rawValue)!) }
     var id: String { rawValue }
     var icon: String {
@@ -13,6 +13,7 @@ private enum Page: String, CaseIterable, Identifiable {
         case .tasks: return "arrow.triangle.2.circlepath"
         case .device: return "iphone"
         case .settings: return "slider.horizontal.3"
+        case .experiments: return "flask"
         }
     }
 }
@@ -142,6 +143,7 @@ struct ContentView: View {
                     case .tasks: tasks
                     case .device: device
                     case .settings: settings
+                    case .experiments: experiments
                     }
                 }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 transferBar
@@ -165,7 +167,7 @@ struct ContentView: View {
                 Text("PixelBridge").font(.system(size: 14 * Layout.scale, weight: .medium))
             }.padding(.horizontal, 24).padding(.top, 30).padding(.bottom, 40)
             navigationGroup(tr(.sidebar_photos), items: [.library, .overview, .tasks])
-            navigationGroup(tr(.sidebar_management), items: [.device, .settings]).padding(.top, 30)
+            navigationGroup(tr(.sidebar_management), items: [.device, .settings, .experiments]).padding(.top, 30)
             Spacer(minLength: 24)
             VStack(alignment: .leading, spacing: 9) {
                 HStack(spacing: 9) {
@@ -576,6 +578,47 @@ struct ContentView: View {
             }
         }
     }
+    private var experiments: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                SectionHeading(title: tr(.experiments_heading), detail: tr(.experiments_description))
+                Surface {
+                    HStack(spacing: 14) {
+                        Image(systemName: "externaldrive.badge.checkmark")
+                            .font(.system(size: 22)).foregroundStyle(accent)
+                            .frame(width: 48, height: 48)
+                            .background(Palette.selected, in: RoundedRectangle(cornerRadius: 12))
+                        Text(tr(.cleanup_title)).font(.system(size: 17, weight: .medium))
+                        Spacer()
+                        Text(tr(model.pixelCleanupEnabled ? .experiment_enabled : .experiment_disabled))
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(model.pixelCleanupEnabled ? Palette.selectedInk : Palette.muted)
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(Palette.filter, in: Capsule())
+                    }
+                    Text(tr(.cleanup_description)).font(.system(size: 14))
+                        .foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
+                    Divider()
+                    Label(model.cleanupMessage.text, systemImage: "info.circle")
+                        .font(.system(size: 13)).foregroundStyle(Palette.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(tr(.cleanup_scope_notice)).font(.system(size: 12))
+                        .foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 12) {
+                        Button(tr(model.pixelCleanupEnabled ? .cleanup_recheck : .cleanup_enable)) {
+                            Task { await model.enablePixelCleanup() }
+                        }.buttonStyle(ActionStyle(primary: !model.pixelCleanupEnabled))
+                        if model.pixelCleanupEnabled {
+                            Button(tr(.cleanup_disable)) { model.disablePixelCleanup() }.buttonStyle(ActionStyle())
+                        }
+                    }.disabled(model.busy || model.scanning || model.installing || model.pausing)
+                    if model.busy {
+                        Text(tr(.experiments_pause_notice)).font(.system(size: 12)).foregroundStyle(Palette.muted)
+                    }
+                }
+            }.padding(30).frame(maxWidth: .infinity, alignment: .leading)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
     private var settings: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
@@ -629,17 +672,6 @@ struct ContentView: View {
                         NumberControl(title: tr(.settings_concurrency), value: $model.concurrentTasks, range: NumericPreference.concurrentTasks.range, unit: tr(.unit_items)).disabled(model.busy)
                     }
                     Text(tr(.settings_resume_notice)).font(.system(size: 12)).foregroundStyle(Palette.muted)
-                }
-                Surface {
-                    PreferenceRow(title: tr(.cleanup_title), detail: tr(.cleanup_description)) {
-                        if model.pixelCleanupEnabled {
-                            Button(tr(.cleanup_disable)) { model.disablePixelCleanup() }.buttonStyle(ActionStyle()).disabled(model.busy)
-                        } else {
-                            Button(tr(.cleanup_enable)) { Task { await model.enablePixelCleanup() } }.buttonStyle(ActionStyle()).disabled(model.busy)
-                        }
-                    }
-                    Text(model.cleanupMessage.text).font(.system(size: 12)).foregroundStyle(Palette.muted)
-                    Text(tr(.cleanup_scope_notice)).font(.system(size: 12)).foregroundStyle(Palette.muted)
                 }
                 Surface {
                     Label(tr(.settings_cache_title), systemImage: "internaldrive").font(.system(size: 16, weight: .medium))

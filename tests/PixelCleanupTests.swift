@@ -28,7 +28,7 @@ import Foundation
         print("PASS: account fingerprint, parent-button discovery, bilingual confirmation, duplicate IDs, unsafe XML and foreign packages")
 
         var pages: [String] = [], calls: [[String]] = [], lastDump = "", idleFailures = 0
-        var free: Int64 = 1_000_000, version = PixelCleanup.supportedVersion, locked = false, swipeScreen = false
+        var free: Int64 = 1_000_000, version = "7.91.0.973540846", locked = false, swipeScreen = false
         let adapter = PixelCleanup(command: { args, _ in
             calls.append(args)
             if args.contains("ro.product.device") { return "marlin\n" }
@@ -56,8 +56,28 @@ import Foundation
         }, sleep: { _ in try Task.checkCancellation() })
         func taps() -> Int { calls.filter { $0.starts(with: ["shell", "input", "tap"]) }.count }
         var started = 0, finished = 0
-        pages = [home]; swipeScreen = true
-        check(try await adapter.inspectAccount() == account && taps() == 0)
+        // Version changes alone must not reject the same recognized flow. Setup
+        // may navigate, but never presses the cleanup confirmation button.
+        for candidate in ["7.91.0.973540846", "8.0.0.fixture", "6.0.0.fixture"] {
+            version = candidate
+            for destination in [confirm, empty] {
+                pages = [home, menu, destination]; calls = []; swipeScreen = true
+                check(try await adapter.inspectAccount() == account && taps() == 2 && pages.isEmpty)
+            }
+        }
+        for candidate in ["7.91.0.973540846", "8.0.0.fixture"] {
+            version = candidate
+            for destination in [duplicate, confirm.replacingOccurrences(of: "安全备份", with: "尚未备份"), progress] {
+                pages = [home, menu, destination]; calls = []
+                do { _ = try await adapter.inspectAccount(); preconditionFailure("Unsafe setup accepted") } catch {}
+                precondition(taps() == 2)
+            }
+            pages = [home, menu.replacingOccurrences(of: "释放此设备的空间", with: "清理存储空间")]; calls = []
+            do { _ = try await adapter.inspectAccount(); preconditionFailure("Cloud storage menu accepted") } catch {}
+            precondition(taps() == 1)
+        }
+        print("PASS: setup probes confirmation or empty state across versions without cleaning; unknown and cloud-storage pages are rejected")
+        version = "8.0.0.fixture"
         pages = [home, menu, confirm, confirm, progress, complete]; calls = []
         let reclaimed = try await adapter.run(account: account, pending: false, started: { started += 1 }, finished: { finished += 1 })
         precondition(started == 1 && finished == 1 && taps() == 3 && reclaimed == 16_000_000 * 1024)
@@ -66,9 +86,9 @@ import Foundation
         print("PASS: read-only enable; one cleanup click; fresh confirmation; completion plus real space measurement")
 
         for bad in ["version", "lock", "account", "backup", "changed-confirmation"] {
-            calls = []; started = 0; finished = 0; version = PixelCleanup.supportedVersion; locked = false
+            calls = []; started = 0; finished = 0; version = "7.91.0.973540846"; locked = false
             pages = [home]
-            if bad == "version" { version = "8.0.unknown" }
+            if bad == "version" { version = "" }
             if bad == "lock" { locked = true }
             if bad == "account" { pages = [home.replacingOccurrences(of: "example@example.test", with: "other@example.test")] }
             if bad == "backup" { pages = [home.replacingOccurrences(of: "已完成备份", with: "正在备份")] }
@@ -76,8 +96,8 @@ import Foundation
             do { _ = try await adapter.run(account: account, pending: false, started: { started += 1 }, finished: { finished += 1 }); preconditionFailure("Should stop") } catch {}
             precondition(started == 0 && finished == 0 && taps() <= (bad == "changed-confirmation" ? 2 : 0))
         }
-        print("PASS: unsupported version, secure lock, changed account, incomplete backup and changed confirmation never trigger cleanup")
-        version = PixelCleanup.supportedVersion; locked = false; calls = []; pages = [progress, progress, complete]
+        print("PASS: missing active version, secure lock, changed account, incomplete backup and changed confirmation never trigger cleanup")
+        version = "7.91.0.973540846"; locked = false; calls = []; pages = [progress, progress, complete]
         _ = try await adapter.run(account: account, pending: true, started: { preconditionFailure("Duplicate cleanup") }, finished: { finished += 1 })
         precondition(taps() == 0)
         calls = []; pages = [home, menu, confirm]

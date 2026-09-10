@@ -1,7 +1,7 @@
 import Foundation
 
-// A deliberately narrow adapter for the stock Google Photos build verified on Android 10.
-// Unknown versions/pages fail closed. Never infer cloud backup from PixelBridge's queue.
+// Capability-based adapter for the recognized Google Photos device-cleanup flow.
+// Unknown pages fail closed, regardless of version. Never infer cloud backup from the queue.
 enum CleanupIssue: Error {
     case unsupported, locked, page, account, waiting, nothing, timeout, pending, unstable
     var key: TextKey {
@@ -97,7 +97,6 @@ final class CleanupXML: NSObject, XMLParserDelegate {
 
 @MainActor final class PixelCleanup {
     nonisolated static let package = "com.google.android.apps.photos"
-    nonisolated static let supportedVersion = "7.91.0.973540846"
     typealias Command = ([String], Double) async throws -> String
     let command: Command
     let sleep: (UInt64) async throws -> Void
@@ -114,7 +113,10 @@ final class CleanupXML: NSObject, XMLParserDelegate {
         let android = try await command(["shell", "getprop", "ro.build.version.release"], 20).trimmingCharacters(in: .whitespacesAndNewlines)
         let versions = try await command(["shell", "dumpsys", "package", Self.package], 20)
         let version = versions.split(separator: "\n").first { $0.trimmingCharacters(in: .whitespaces).hasPrefix("versionName=") }?.trimmingCharacters(in: .whitespaces)
-        guard ["marlin", "sailfish"].contains(product), android == "10", version == "versionName=" + Self.supportedVersion else { throw CleanupIssue.unsupported }
+        // Keep the device/OS baseline; a Photos version identifies the installation,
+        // not its compatibility. Fresh UI checks gate every cleanup action.
+        guard ["marlin", "sailfish"].contains(product), android == "10",
+              let version, !version.dropFirst("versionName=".count).trimmingCharacters(in: .whitespaces).isEmpty else { throw CleanupIssue.unsupported }
         try await wakeScreen()
         let activity = try await command(["shell", "dumpsys", "activity", "activities"], 20)
         guard let foreground = activity.split(separator: "\n").first(where: { $0.contains("mResumedActivity:") }),
@@ -166,7 +168,9 @@ final class CleanupXML: NSObject, XMLParserDelegate {
         try await sleep(700_000_000)
         return try await snapshot()
     }
-    // Explicit setup binds the account on this device, without deleting anything.
+    // Probe the complete navigation path before binding the account. Never tap the
+    // free-up button during setup; an empty page validates navigation only. Runtime
+    // still requires the affirmative backup and confirmation screens before cleanup.
     func inspectAccount() async throws -> String {
         try await preflight()
         var page = try await open()
@@ -175,7 +179,13 @@ final class CleanupXML: NSObject, XMLParserDelegate {
         if page.account == nil, let close = page.node("og_bento_toolbar_close_button") ?? page.node("close_button") {
             try await tap(close); page = try await snapshot()
         }
-        guard let account = page.account else { throw CleanupIssue.page }
+        guard let account = page.account, let disc = page.node("selected_account_disc") else { throw CleanupIssue.page }
+        try await tap(disc)
+        page = try await snapshot()
+        guard let entry = page.menuButton() else { throw CleanupIssue.page }
+        try await tap(entry)
+        page = try await snapshot()
+        guard page.empty || page.confirmation != nil else { throw CleanupIssue.page }
         return account
     }
     func freeBytes() async throws -> Int64 {

@@ -509,7 +509,7 @@ final class BridgeModel: ObservableObject {
     func enablePixelCleanup() async {
         guard worker == nil, !busy, !scanning, !installing, !pausing else { return }
         let task = Task { @MainActor in
-            busy = true; status = Message(.cleanup_checking)
+            busy = true; status = Message(.cleanup_checking); cleanupMessage = status
             defer { busy = false }
             do {
                 guard cleanupPendingDevice.isEmpty else { throw CleanupIssue.pending }
