@@ -720,9 +720,13 @@ struct ContentView: View {
                             Text(tr(.logs_original_language)).font(.caption).foregroundStyle(Palette.muted)
                             if model.logs.isEmpty { Text(tr(.logs_empty)).foregroundStyle(Palette.muted) }
                             ForEach(Array(model.logs.prefix(15).enumerated()), id: \.offset) { _, text in
-                                Text(text).font(.system(size: 11, design: .monospaced)).foregroundStyle(Palette.muted).textSelection(.enabled)
+                                Text(text).font(.system(size: 11, design: .monospaced)).foregroundStyle(Palette.muted)
+                                    .multilineTextAlignment(.leading)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .textSelection(.enabled)
                             }
-                        }.padding(.top, 16)
+                        }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 16)
                     } label: { Label(tr(.logs_title), systemImage: "text.alignleft").font(.system(size: 14, weight: .medium)) }
                 }
                 HStack(spacing: 6) {

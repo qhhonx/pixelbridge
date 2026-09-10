@@ -1,11 +1,10 @@
-PixelBridge 0.1.0-beta.10 — show cleanup progress and return to Photos.
+PixelBridge 0.1.0-beta.11 — left-align activity logs.
 
-- Display each live cleanup stage in Backup Overview, the bottom status bar and Experiments: device readiness, opening Google Photos, verifying the account, checking eligible copies, releasing space, returning to Photos and verifying available space.
-- Show the percentage reported by Google Photos when available. Otherwise show an activity indicator, without fabricated percentage or stale photo-transfer progress.
-- Record stage transitions in the activity log without logging every percentage refresh. Clear transient progress after cancellation, failure or completion.
-- After confirmed cleanup, press the recognized Done button and verify the Photos home screen. A return-navigation failure is reported separately and does not repeat a completed cleanup.
+- Align the activity-log container and each log entry to the leading edge instead of centering the whole column.
+- Wrap long entries naturally and show their full height, while preserving selectable text.
+- Verified the layout with mixed short and long Chinese/English log entries.
 
-Existing settings, queue progress and cleanup safeguards are retained.
+Existing settings, queue progress and backup behavior are unchanged.
 
 Free macOS beta for Apple Silicon, macOS 14+.
 
