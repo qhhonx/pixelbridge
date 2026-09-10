@@ -254,7 +254,7 @@
   "tasks_preparing": "Preparing file",
   "tasks_active_description": "Marked as sent after file verification succeeds.",
   "cleanup_title": "Auto-free Pixel space",
-  "cleanup_description": "Keep at least {0} GB free on Pixel. If the next transfer cannot meet this requirement, wait for Google Photos to finish uploading and free device space before continuing.",
+  "cleanup_description": "Keep at least {0} GB free on Pixel. If the next transfer cannot meet this requirement, use Google Photos to free device space occupied by backed-up copies before continuing.",
   "cleanup_scope_notice": "Setup only inspects cleanup pages; it does not delete files. Compatibility follows recognized Chinese/English screens, not a fixed Google Photos version. Unrecognized screens stop the flow. Currently for original Pixel / Pixel XL on Android 10. Google Photos may also clean eligible backed-up files in other folders. Pausing PixelBridge does not stop cleanup already started in Google Photos.",
   "cleanup_enable": "Check and enable",
   "cleanup_disable": "Disable",

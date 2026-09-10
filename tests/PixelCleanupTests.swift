@@ -86,18 +86,35 @@ import Foundation
         precondition(paths.count == Set(paths).count)
         print("PASS: read-only enable; one cleanup click; fresh confirmation; completion plus real space measurement")
 
-        for bad in ["version", "lock", "account", "backup", "changed-confirmation"] {
+        // Real home pages use a different completion label, or omit it entirely.
+        // Ongoing uploads do not make already-backed-up copies ineligible for cleanup.
+        for status in ["备份完成", "", "正在备份", "Backing up 3 items"] {
+            let currentHome = home.replacingOccurrences(of: "已完成备份", with: status)
+            let currentMenu = menu.replacingOccurrences(of: "备份已完成", with: status)
+            pages = [currentHome, currentMenu, confirm, confirm, complete]; calls = []; started = 0; finished = 0
+            _ = try await adapter.run(account: account, pending: false, started: { started += 1 }, finished: { finished += 1 })
+            precondition(taps() == 3 && started == 1 && finished == 1 && pages.isEmpty)
+            // The global status is irrelevant, but the official safe-backup claim is mandatory.
+            pages = [currentHome, currentMenu, confirm.replacingOccurrences(of: "安全备份", with: "尚未备份")]; calls = []
+            do {
+                _ = try await adapter.run(account: account, pending: false, started: { preconditionFailure("Unsafe confirmation") }, finished: {})
+                preconditionFailure("Unsafe cleanup accepted")
+            } catch CleanupIssue.page {}
+            precondition(taps() == 2)
+        }
+        print("PASS: real-world completion labels, missing status and ongoing uploads use official eligibility; unsafe confirmation never cleans")
+
+        for bad in ["version", "lock", "account", "changed-confirmation"] {
             calls = []; started = 0; finished = 0; version = "7.91.0.973540846"; locked = false
             pages = [home]
             if bad == "version" { version = "" }
             if bad == "lock" { locked = true }
             if bad == "account" { pages = [home.replacingOccurrences(of: "example@example.test", with: "other@example.test")] }
-            if bad == "backup" { pages = [home.replacingOccurrences(of: "已完成备份", with: "正在备份")] }
             if bad == "changed-confirmation" { pages = [home, menu, confirm, duplicate] }
             do { _ = try await adapter.run(account: account, pending: false, started: { started += 1 }, finished: { finished += 1 }); preconditionFailure("Should stop") } catch {}
             precondition(started == 0 && finished == 0 && taps() <= (bad == "changed-confirmation" ? 2 : 0))
         }
-        print("PASS: missing active version, secure lock, changed account, incomplete backup and changed confirmation never trigger cleanup")
+        print("PASS: missing active version, secure lock, changed account and changed confirmation never trigger cleanup")
         version = "7.91.0.973540846"; locked = false; calls = []; pages = [progress, progress, complete]
         _ = try await adapter.run(account: account, pending: true, started: { preconditionFailure("Duplicate cleanup") }, finished: { finished += 1 })
         precondition(taps() == 0)

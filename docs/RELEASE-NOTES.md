@@ -1,13 +1,9 @@
-PixelBridge 0.1.0-beta.8 — coordinate cleanup and transfers with one space budget.
+PixelBridge 0.1.0-beta.9 — let Google Photos determine cleanup eligibility.
 
-- Use one Minimum free space on Pixel setting for cleanup and transfer admission. Add the pending file and concurrent reservations before permitting a transfer; remove the separate derived 3 GB cleanup threshold.
-- Correct Android storage-unit conversion so the Rust transfer checks and Swift cleanup checks agree at the same free-space boundary.
-- Persist low-space cleanup waits across batches, pauses and restarts. Stop and drain active transfers before cleanup; waiting for Google Photos, temperature, an empty cleanup page or cooldown no longer resumes new transfers.
-- Resume after cleanup only when available space meets the reserve and pending-file budget. Preserve prepared files and delivery records. External/manual space recovery can release the hold, while uncertain cleanup must be reconciled first.
-- Start the ten-minute action interval immediately before clicking cleanup. Failed preflight checks no longer consume it.
-- Show concrete, consistent overview and log messages for temperature, cloud uploads, foreground app, cooldown, cleanup start/completion and required free space.
-
-Existing experiment opt-in and account bindings are retained. This update uses your existing Pixel space reserve directly; there is no separate cleanup threshold to configure.
+- Fix cleanup stopping immediately after opening Google Photos when its home screen uses a different backup status label or omits the status banner.
+- Remove the requirement for all Google Photos uploads to finish. Its official device-cleanup flow selects safely backed-up copies even while other uploads continue.
+- Keep account binding, the explicit safe-backup confirmation, fresh checks before clicking, and pending-operation reconciliation. Never infer deletion eligibility from file age or PixelBridge transfer records.
+- Keep PixelBridge transfers paused during cleanup, then measure free space before resuming. Existing settings, account bindings and queue progress are retained.
 
 Free macOS beta for Apple Silicon, macOS 14+.
 

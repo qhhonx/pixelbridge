@@ -73,14 +73,14 @@ import Foundation
             return model
         }
         let first = model()
-        pages = [uploading]
+        pages = [uploading, menu, empty]
         await first.batch()
-        precondition(deliveries == 0 && first.detail.key == .cleanup_backup_wait)
+        precondition(deliveries == 0 && first.detail.key == .cleanup_nothing)
         precondition(requirements.contains(1.6) && first.rows.first?.phase == "prepared")
         precondition(defaults.string(forKey: "pixelCleanupHoldDevice") == "fixture")
         precondition((defaults.object(forKey: "pixelCleanupTransferBytes") as? NSNumber)?.int64Value == 600_000_000)
         precondition(defaults.object(forKey: "pixelCleanupLastAction") == nil)
-        print("PASS: one 1 GB reserve plus a 600 MB file blocks at 1.4 GB; waiting for upload never admits another transfer")
+        print("PASS: one 1 GB reserve plus a 600 MB file blocks at 1.4 GB; no eligible copies keeps transfers stopped")
 
         let restarted = model()
         let guards = requirements.count
@@ -92,22 +92,22 @@ import Foundation
         temperature = 39; foreground = "other.app"
         await restarted.batch()
         precondition(restarted.detail.key == .cleanup_foreground && deliveries == 0)
-        foreground = pkg; pages = [uploading]
+        foreground = pkg; pages = [uploading, menu, empty]
         await restarted.batch()
-        precondition(restarted.detail.key == .cleanup_backup_wait && deliveries == 0)
+        precondition(restarted.detail.key == .cleanup_nothing && deliveries == 0)
         pages = [home, menu, empty]
         await restarted.batch()
         precondition(restarted.detail.key == .cleanup_nothing && deliveries == 0)
         precondition(defaults.object(forKey: "pixelCleanupLastAction") == nil)
-        print("PASS: restart preserves the required file space; temperature, foreground, upload and empty states block transfers without consuming the action cooldown")
+        print("PASS: restart preserves the required file space; temperature, foreground and empty states block transfers without consuming the action cooldown")
 
-        pages = [home, menu, confirm, confirm, progress, complete]; taps = 0
+        pages = [uploading, menu.replacingOccurrences(of: "Backup complete", with: "Backing up"), confirm, confirm, progress, complete]; taps = 0
         await restarted.batch()
         precondition(taps == 3 && deliveries == 1 && restarted.delivered == 1)
         precondition(defaults.object(forKey: "pixelCleanupHoldDevice") == nil && defaults.object(forKey: "pixelCleanupPendingDevice") == nil)
         precondition(defaults.object(forKey: "pixelCleanupLastAction") != nil)
         await restarted.batch(); precondition(deliveries == 1)
-        print("PASS: only confirmed completion plus sufficient space releases the queue; completed photos are not transferred again")
+        print("PASS: ongoing cloud uploads allow eligible cleanup; confirmed completion plus sufficient space releases the queue; completed photos are not transferred again")
 
         available = 700_000_000
         let cooled = model(); pages = []; taps = 0
@@ -138,7 +138,7 @@ import Foundation
         precondition(deliveries == 3 && defaults.object(forKey: "pixelCleanupHoldDevice") == nil)
         print("PASS: insufficient cleanup retains the hold; external space recovery safely releases it without another cleanup action")
         defaults.removeObject(forKey: "pixelCleanupLastAction")
-        available = 2_500_000_000; pages = [uploading]
+        available = 2_500_000_000; pages = [uploading, menu, empty]
         let parallel = model(); parallel.concurrentTasks = 3
         let group = (0..<3).map { LibraryItem(id: "parallel-\($0)", name: "sample.mov", date: .distantPast, kind: "video") }
         parallel.library = group
@@ -154,7 +154,7 @@ import Foundation
         }
         await parallel.batch()
         precondition(active == 0 && parallel.activeIDs.isEmpty && parallel.rows.count == 3)
-        precondition(parallel.detail.key == .cleanup_backup_wait && requirements.contains(2.8))
+        precondition(parallel.detail.key == .cleanup_nothing && requirements.contains(2.8))
         precondition((defaults.object(forKey: "pixelCleanupTransferBytes") as? NSNumber)?.int64Value == 1_800_000_000)
         precondition(parallel.rows.allSatisfy { $0.phase == "prepared" })
         parallel.disablePixelCleanup()

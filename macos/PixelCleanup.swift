@@ -78,7 +78,6 @@ final class CleanupXML: NSObject, XMLParserDelegate {
         guard matches.count == 1, let range = Range(matches[0].range, in: text) else { return nil }
         return stableID(String(text[range]).lowercased())
     }
-    var backupComplete: Bool { nodes.contains { ["已完成备份", "备份已完成", "Backup complete"].contains($0.text) } }
     var completed: Bool {
         guard let title = node("free_up_space_completed_title"), node("done_button")?.point != nil else { return false }
         return title.text.hasPrefix("您已释放 ") || title.text.hasPrefix("You freed up ")
@@ -177,7 +176,7 @@ enum CleanupResult {
     }
     // Probe the complete navigation path before binding the account. Never tap the
     // free-up button during setup; an empty page validates navigation only. Runtime
-    // still requires the affirmative backup and confirmation screens before cleanup.
+    // relies on Google Photos to select eligible copies on its safe-backup confirmation.
     func inspectAccount() async throws -> String {
         try await preflight()
         var page = try await open()
@@ -190,6 +189,8 @@ enum CleanupResult {
         try await tap(disc)
         page = try await snapshot()
         guard let entry = page.menuButton() else { throw CleanupIssue.page }
+        // The official device-cleanup flow selects only safely backed-up copies.
+        // Global backup status (including ongoing uploads) does not gate eligibility.
         try await tap(entry)
         page = try await snapshot()
         guard page.empty || page.confirmation != nil else { throw CleanupIssue.page }
@@ -217,11 +218,11 @@ enum CleanupResult {
         }
         guard page.account == account else { throw CleanupIssue.account }
         guard let disc = page.node("selected_account_disc") else { throw CleanupIssue.page }
-        guard page.backupComplete else { throw CleanupIssue.backup }
         try await tap(disc)
         page = try await snapshot()
         guard let entry = page.menuButton() else { throw CleanupIssue.page }
-        guard page.backupComplete else { throw CleanupIssue.backup }
+        // The official device-cleanup flow selects only safely backed-up copies.
+        // Global backup status (including ongoing uploads) does not gate eligibility.
         try await tap(entry)
         page = try await snapshot()
         if pending && page.progress { return try await waitForCompletion(before: before, finished: finished) }

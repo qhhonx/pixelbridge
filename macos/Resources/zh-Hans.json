@@ -254,7 +254,7 @@
   "tasks_preparing": "准备文件中",
   "tasks_active_description": "文件校验通过后，将标记为已传到 Pixel。",
   "cleanup_title": "自动释放 Pixel 空间",
-  "cleanup_description": "为 Pixel 保留至少 {0} GB 可用空间。下一项传输无法满足此要求时，先等待 Google 相册完成上传并释放空间，满足条件后再继续传输。",
+  "cleanup_description": "为 Pixel 保留至少 {0} GB 可用空间。下一项传输无法满足此要求时，先通过 Google 相册释放已备份文件占用的空间，满足条件后再继续传输。",
   "cleanup_scope_notice": "启用检查只浏览清理页面，不执行清理。不限定 Google 相册版本号；按中英文页面识别兼容性，无法确认时停止。目前适用于 Android 10 的初代 Pixel / Pixel XL。Google 相册也可能清理其他文件夹内符合条件的已备份内容。暂停 PixelBridge 不会中断 Google 相册已开始的清理。",
   "cleanup_enable": "检查并启用",
   "cleanup_disable": "关闭",
