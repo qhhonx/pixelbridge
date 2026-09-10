@@ -271,12 +271,12 @@ final class BatchLease {
 }
 
 enum NumericPreference: String, CaseIterable {
-    case intervalMinutes, macReserveGB, pixelReserveGB, maxTemperatureC, concurrentTasks
+    case intervalMinutes, macReserveGB, pixelReserveGB, maxTemperatureC, concurrentTasks, logRetentionDays, logStorageMB
     var fallback: Int {
-        switch self { case .concurrentTasks: return 1; case .intervalMinutes: return 5; case .macReserveGB: return 8; case .pixelReserveGB: return 4; case .maxTemperatureC: return 40 }
+        switch self { case .logRetentionDays: return 7; case .logStorageMB: return 50; case .concurrentTasks: return 1; case .intervalMinutes: return 5; case .macReserveGB: return 8; case .pixelReserveGB: return 4; case .maxTemperatureC: return 40 }
     }
     var range: ClosedRange<Int> {
-        switch self { case .concurrentTasks: return 1...3; case .intervalMinutes: return 1...60; case .macReserveGB: return 2...100; case .pixelReserveGB: return 1...32; case .maxTemperatureC: return 35...45 }
+        switch self { case .logRetentionDays: return 1...90; case .logStorageMB: return 10...500; case .concurrentTasks: return 1...3; case .intervalMinutes: return 1...60; case .macReserveGB: return 2...100; case .pixelReserveGB: return 1...32; case .maxTemperatureC: return 35...45 }
     }
     func clamp(_ value: Int) -> Int { min(range.upperBound, max(range.lowerBound, value)) }
     func read(_ defaults: UserDefaults = .standard) -> Int {

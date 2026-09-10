@@ -2,6 +2,7 @@ import AppKit
 import Photos
 import SwiftUI
 import ServiceManagement
+import UniformTypeIdentifiers
 
 @MainActor
 final class BridgeModel: ObservableObject {
@@ -56,6 +57,26 @@ final class BridgeModel: ObservableObject {
     @Published var batchTotal = 0
     @Published var cacheBytes: Int64 = 0
     @Published var logs: [String] = []
+    @Published private(set) var logStorageFailed = false
+    @Published private(set) var exportingLogs = false
+    private let activityLogger: ActivityLogger
+    @Published var logRetentionDays = NumericPreference.logRetentionDays.read() {
+        didSet {
+            let bounded = NumericPreference.logRetentionDays.save(logRetentionDays)
+            if logRetentionDays != bounded { logRetentionDays = bounded }
+            updateLogPolicy()
+        }
+    }
+    @Published var logStorageMB = NumericPreference.logStorageMB.read() {
+        didSet {
+            let bounded = NumericPreference.logStorageMB.save(logStorageMB)
+            if logStorageMB != bounded { logStorageMB = bounded }
+            updateLogPolicy()
+        }
+    }
+    private func updateLogPolicy() {
+        activityLogger.configure(days: logRetentionDays, totalBytes: logStorageMB * 1_000_000)
+    }
     @Published var authorized = false
     @Published var autoRunning = UserDefaults.standard.bool(forKey: "automatic")
     @Published var nextRun: Date?
@@ -130,6 +151,7 @@ final class BridgeModel: ObservableObject {
     private let staging: URL
     init(root: URL = bridgeRoot) {
         state = root.appendingPathComponent("State"); staging = root.appendingPathComponent("Staging")
+        activityLogger = ActivityLogger(state: state)
         if !cleanupPendingDevice.isEmpty { cleanupMessage = Message(.cleanup_pending) }
         else if !cleanupHoldDevice.isEmpty && pixelCleanupEnabled { cleanupMessage = Message(.cleanup_holding) }
         else if pixelCleanupEnabled { cleanupMessage = Message(.cleanup_enabled) }
@@ -146,7 +168,8 @@ final class BridgeModel: ObservableObject {
         guard !started else { return }; started = true
         do {
             try ensureDirectory(state); try ensureDirectory(staging)
-            if let text = try? String(contentsOf: state.appendingPathComponent("activity.log"), encoding: .utf8) { logs = Array(text.split(separator: "\n").map(String.init).suffix(200).reversed()) }
+            do { logs = try await activityLogger.load() }
+            catch { logStorageFailed = true }
             if let data = try? Data(contentsOf: state.appendingPathComponent("retry.json")) {
                 retries = (try? JSONDecoder().decode([String: RetryInfo].self, from: data)) ?? [:]
             }
@@ -902,9 +925,36 @@ final class BridgeModel: ObservableObject {
     func showData() { NSWorkspace.shared.open(bridgeRoot) }
     func showSettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Photos")!) }
     private func report(_ error: Error) { status = Message(.status_attention); detail = Message(error: error); log(error.localizedDescription) }
+    func showLogHistory() {
+        NSWorkspace.shared.open(activityLogger.directory)
+    }
+    func exportLogs() {
+        guard !exportingLogs else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.plainText]
+        panel.nameFieldStringValue = "PixelBridge-logs.txt"
+        panel.begin { [weak self] response in
+            guard response == .OK, let destination = panel.url, let self else { return }
+            self.exportingLogs = true
+            Task { @MainActor in
+                defer { self.exportingLogs = false }
+                do {
+                    try await self.activityLogger.export(to: destination)
+                    NSWorkspace.shared.activateFileViewerSelecting([destination])
+                } catch {
+                    let alert = NSAlert()
+                    alert.messageText = tr(.logs_export_failed)
+                    alert.informativeText = error.localizedDescription
+                    alert.runModal()
+                }
+            }
+        }
+    }
     private func log(_ text: String) {
         logs.insert(Date().formatted(date: .numeric, time: .standard) + "  " + text.replacingOccurrences(of: "\n", with: " "), at: 0)
         if logs.count > 200 { logs.removeLast() }
-        try? logs.reversed().joined(separator: "\n").write(to: state.appendingPathComponent("activity.log"), atomically: true, encoding: .utf8)
+        activityLogger.append(logs[0]) { [weak self] success in
+            Task { @MainActor in self?.logStorageFailed = !success }
+        }
     }
 }

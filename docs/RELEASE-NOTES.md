@@ -1,10 +1,11 @@
-PixelBridge 0.1.0-beta.11 — left-align activity logs.
+PixelBridge 0.1.0-beta.12 — automatic cleanup recovery and retained activity logs.
 
-- Align the activity-log container and each log entry to the leading edge instead of centering the whole column.
-- Wrap long entries naturally and show their full height, while preserving selectable text.
-- Verified the layout with mixed short and long Chinese/English log entries.
-
-Existing settings, queue progress and backup behavior are unchanged.
+- Recover once from an unrecognized Google Photos navigation page by force-stopping and reopening the app, then checking the account and official cleanup confirmation again.
+- Never restart Photos to recover an unresolved cleanup action. Retry transient UI animation reads without using stale page data.
+- Retain activity logs in daily, size-limited files instead of overwriting everything beyond 200 entries. Import existing activity logs on upgrade.
+- Configure log retention from 1–90 days and total storage from 10–500 MB in Settings; defaults are 7 days and 50 MB. Older files are removed first.
+- Open retained history or export it to one text file. File operations run on a background queue; the preview remains limited to 15 entries.
+- Show log-storage failures and cleanup recovery stages in the app.
 
 Free macOS beta for Apple Silicon, macOS 14+.
 

@@ -1,6 +1,20 @@
 import Foundation
 
 enum TextKey: String, CaseIterable {
+    case settings_log_days
+    case settings_log_size
+    case unit_days
+    case logs_recent
+
+    case logs_retention
+    case logs_history
+    case logs_export
+    case logs_export_failed
+    case logs_write_failed
+
+    case cleanup_restart_photos
+    case cleanup_wait_page
+
     case cleanup_home_failed
     case cleanup_stage_home
     case cleanup_stage_device

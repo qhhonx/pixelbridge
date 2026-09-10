@@ -105,7 +105,7 @@ final class CleanupXML: NSObject, XMLParserDelegate {
 }
 
 enum CleanupProgress: Equatable {
-    case checkingDevice, openingPhotos, checkingAccount, openingCleanup, confirming, releasing(Double?), verifyingSpace, returningHome, returnHomeFailed
+    case checkingDevice, openingPhotos, checkingAccount, openingCleanup, confirming, releasing(Double?), verifyingSpace, returningHome, returnHomeFailed, restartingPhotos, waitingForPage
     var message: Message {
         switch self {
         case .checkingDevice: return Message(.cleanup_stage_device)
@@ -119,6 +119,8 @@ enum CleanupProgress: Equatable {
         case .verifyingSpace: return Message(.cleanup_stage_verify)
         case .returningHome: return Message(.cleanup_stage_home)
         case .returnHomeFailed: return Message(.cleanup_home_failed)
+        case .restartingPhotos: return Message(.cleanup_restart_photos)
+        case .waitingForPage: return Message(.cleanup_wait_page)
         }
     }
     var fraction: Double? {
@@ -200,11 +202,68 @@ enum CleanupResult {
         _ = try await command(["shell", "input", "tap", String(point.0), String(point.1)], 10)
         try await sleep(500_000_000)
     }
-    private func open() async throws -> CleanupXML {
+    private func open(progress: (CleanupProgress) -> Void) async throws -> CleanupXML {
         _ = try await command(["shell", "input", "keyevent", "KEYCODE_WAKEUP"], 10)
         _ = try await command(["shell", "monkey", "-p", Self.package, "-c", "android.intent.category.LAUNCHER", "1"], 20)
         try await sleep(700_000_000)
-        return try await snapshot()
+        return try await navigationSnapshot(progress: progress)
+    }
+    private func navigationSnapshot(progress: (CleanupProgress) -> Void) async throws -> CleanupXML {
+        for attempt in 0..<3 {
+            do { return try await snapshot() }
+            catch CleanupIssue.unstable {
+                guard attempt < 2 else { throw CleanupIssue.unstable }
+                progress(.waitingForPage)
+                try await sleep(1_000_000_000)
+            }
+        }
+        throw CleanupIssue.unstable
+    }
+    private func offer(from initial: CleanupXML, account expected: String?, allowRecovery: Bool,
+                       progress: (CleanupProgress) -> Void) async throws -> (String, CleanupXML) {
+        do {
+            return try await navigateToOffer(from: initial, account: expected, progress: progress)
+        } catch CleanupIssue.page {
+            guard allowRecovery else { throw CleanupIssue.page }
+            // Retry navigation only, never the cleanup action or an unresolved operation.
+            // Read again before stopping Photos: another cleanup may have started meanwhile.
+            let current = try await navigationSnapshot(progress: progress)
+            guard !current.progress, !current.completed else { throw CleanupIssue.pending }
+            if let actual = current.account, let expected, actual != expected { throw CleanupIssue.account }
+            try await preflight()
+            try Task.checkCancellation()
+            progress(.restartingPhotos)
+            try Task.checkCancellation()
+            _ = try await command(["shell", "am", "force-stop", Self.package], 10)
+            try Task.checkCancellation()
+            let reopened = try await open(progress: progress)
+            // Deliberately no recursive recovery: one restart per invocation.
+            return try await navigateToOffer(from: reopened, account: expected, progress: progress)
+        }
+    }
+    private func navigateToOffer(from initial: CleanupXML, account expected: String?,
+                                 progress: (CleanupProgress) -> Void) async throws -> (String, CleanupXML) {
+        var page = initial
+        if page.progress { throw CleanupIssue.pending }
+        if page.completed, let done = page.node("done_button") {
+            try await tap(done); page = try await navigationSnapshot(progress: progress)
+        }
+        if page.account == nil, let close = page.node("og_bento_toolbar_close_button") ?? page.node("close_button") {
+            try await tap(close); page = try await navigationSnapshot(progress: progress)
+        }
+        progress(.checkingAccount)
+        guard let account = page.account, let disc = page.node("selected_account_disc") else { throw CleanupIssue.page }
+        guard expected == nil || expected == account else { throw CleanupIssue.account }
+        try await tap(disc)
+        progress(.openingCleanup)
+        page = try await navigationSnapshot(progress: progress)
+        guard let entry = page.menuButton() else { throw CleanupIssue.page }
+        // Google Photos, not global upload status, determines eligible copies.
+        try await tap(entry)
+        progress(.confirming)
+        page = try await navigationSnapshot(progress: progress)
+        guard page.empty || page.confirmation != nil || page.progress else { throw CleanupIssue.page }
+        return (account, page)
     }
     // Probe the complete navigation path before binding the account. Never tap the
     // free-up button during setup; an empty page validates navigation only. Runtime
@@ -213,23 +272,8 @@ enum CleanupResult {
         progress(.checkingDevice)
         try await preflight()
         progress(.openingPhotos)
-        var page = try await open()
-        if page.progress { throw CleanupIssue.pending }
-        if page.completed, let done = page.node("done_button") { try await tap(done); page = try await snapshot() }
-        if page.account == nil, let close = page.node("og_bento_toolbar_close_button") ?? page.node("close_button") {
-            try await tap(close); page = try await snapshot()
-        }
-        progress(.checkingAccount)
-        guard let account = page.account, let disc = page.node("selected_account_disc") else { throw CleanupIssue.page }
-        try await tap(disc)
-        progress(.openingCleanup)
-        page = try await snapshot()
-        guard let entry = page.menuButton() else { throw CleanupIssue.page }
-        // The official device-cleanup flow selects only safely backed-up copies.
-        // Global backup status (including ongoing uploads) does not gate eligibility.
-        try await tap(entry)
-        progress(.confirming)
-        page = try await snapshot()
+        let initial = try await open(progress: progress)
+        let (account, page) = try await offer(from: initial, account: nil, allowRecovery: true, progress: progress)
         guard page.empty || page.confirmation != nil else { throw CleanupIssue.page }
         return account
     }
@@ -246,32 +290,18 @@ enum CleanupResult {
         try await preflight()
         let before = try await freeBytes()
         progress(.openingPhotos)
-        var page = try await open()
-        if pending && (page.progress || page.completed) {
+        let initial = try await open(progress: progress)
+        if pending && (initial.progress || initial.completed) {
             return try await waitForCompletion(before: before, progress: progress, finished: finished)
         }
-        if page.progress { throw CleanupIssue.pending }
-        if page.completed, let done = page.node("done_button") { try await tap(done); page = try await snapshot() }
-        if page.account == nil, let close = page.node("og_bento_toolbar_close_button") ?? page.node("close_button") {
-            try await tap(close); page = try await snapshot()
-        }
-        progress(.checkingAccount)
-        guard page.account == account else { throw CleanupIssue.account }
-        guard let disc = page.node("selected_account_disc") else { throw CleanupIssue.page }
-        try await tap(disc)
-        progress(.openingCleanup)
-        page = try await snapshot()
-        guard let entry = page.menuButton() else { throw CleanupIssue.page }
-        // The official device-cleanup flow selects only safely backed-up copies.
-        // Global backup status (including ongoing uploads) does not gate eligibility.
-        try await tap(entry)
-        progress(.confirming)
-        page = try await snapshot()
+        let (_, offered) = try await offer(from: initial, account: account, allowRecovery: !pending, progress: progress)
+        var page = offered
         if pending && page.progress { return try await waitForCompletion(before: before, progress: progress, finished: finished) }
         if page.empty {
             if pending { finished(); return .reconciled }
             throw CleanupIssue.nothing
         }
+        if page.progress { throw CleanupIssue.pending }
         guard page.confirmation != nil else { throw CleanupIssue.page }
         if pending {
             // The known official UI is offering a fresh action, so the previous operation
@@ -279,7 +309,7 @@ enum CleanupResult {
             finished(); return .reconciled
         }
         // Re-read immediately before the only destructive UI action.
-        page = try await snapshot()
+        page = try await navigationSnapshot(progress: progress)
         guard let confirm = page.confirmation else { throw CleanupIssue.page }
         started()
         try await tap(confirm)
@@ -290,8 +320,8 @@ enum CleanupResult {
         do {
             guard let done = page.node("done_button") else { throw CleanupIssue.page }
             try await tap(done)
-            let home = try await snapshot()
-            guard home.account != nil else { throw CleanupIssue.page }
+            let page = try await navigationSnapshot(progress: progress)
+            guard page.account != nil else { throw CleanupIssue.page }
         } catch is CancellationError { throw CancellationError() }
         catch {
             // Cleanup was already confirmed and measured. Navigation failure must

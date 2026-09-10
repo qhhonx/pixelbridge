@@ -149,6 +149,66 @@ import Foundation
         precondition(events.last == .returnHomeFailed && taps() == 4)
         print("PASS: failed return navigation does not repeat or invalidate confirmed cleanup")
 
+        let settings = xml(node("settings_title", "Google Photos settings"))
+        func restarts() -> Int { calls.filter { $0 == ["shell", "am", "force-stop", PixelCleanup.package] }.count }
+        // Restored settings at launch, or a wrong destination after either navigation tap.
+        for route in [[settings], [home, settings], [home, menu, settings]] {
+            pages = route + [settings, home, menu, confirm, confirm, complete, home]
+            calls = []; events = []; started = 0; finished = 0
+            _ = try await adapter.run(account: account, pending: false, progress: { events.append($0) }, started: { started += 1 }, finished: { finished += 1 })
+            precondition(restarts() == 1 && started == 1 && finished == 1 && pages.isEmpty)
+            precondition(events.filter { $0 == .restartingPhotos }.count == 1)
+            let stop = calls.firstIndex { $0 == ["shell", "am", "force-stop", PixelCleanup.package] }!
+            precondition(calls[(stop + 1)...].contains { $0.starts(with: ["shell", "monkey"]) })
+        }
+        pages = [settings, settings, settings]; calls = []
+        do {
+            _ = try await adapter.run(account: account, pending: false, started: { preconditionFailure("Unknown page cleaned") }, finished: {})
+            preconditionFailure("Unrecognized retry accepted")
+        } catch CleanupIssue.page {}
+        precondition(restarts() == 1 && taps() == 0 && pages.isEmpty)
+        pages = [settings, settings, home, menu, confirm]; calls = []
+        check(try await adapter.inspectAccount() == account)
+        precondition(restarts() == 1 && taps() == 2 && pages.isEmpty)
+        print("PASS: settings recovery force-stops and relaunches once; repeated navigation failure stops; setup never cleans")
+
+        // No restart can interrupt a known/persisted cleanup, or bypass identity checks.
+        for (sequence, isPending) in [([settings], true), ([settings, progress], false), ([settings, complete], false),
+                                      ([settings, home.replacingOccurrences(of: "example@example.test", with: "other@example.test")], false),
+                                      ([settings, settings.replacingOccurrences(of: PixelCleanup.package, with: "other.app")], false)] {
+            pages = sequence; calls = []
+            do {
+                _ = try await adapter.run(account: account, pending: isPending, started: { preconditionFailure("Unsafe recovery") }, finished: {})
+                preconditionFailure("Unsafe recovery accepted")
+            } catch {}
+            precondition(restarts() == 0 && taps() == 0)
+        }
+        pages = [home.replacingOccurrences(of: "example@example.test", with: "other@example.test")]; calls = []
+        do { _ = try await adapter.run(account: account, pending: false, started: {}, finished: {}); preconditionFailure("Wrong account") } catch CleanupIssue.account {}
+        precondition(restarts() == 0 && taps() == 0)
+        pages = [home, menu, confirm, duplicate]; calls = []
+        do { _ = try await adapter.run(account: account, pending: false, started: { preconditionFailure("Changed confirmation") }, finished: {}); preconditionFailure("Changed confirmation accepted") } catch CleanupIssue.page {}
+        precondition(restarts() == 0 && taps() == 2)
+        print("PASS: pending cleanup, observed progress/completion, account mismatch and final confirmation never trigger restart")
+
+        idleFailures = 2; pages = [home, menu, empty]; calls = []; events = []
+        do { _ = try await adapter.run(account: account, pending: false, progress: { events.append($0) }, started: {}, finished: {}); preconditionFailure("Empty page") } catch CleanupIssue.nothing {}
+        precondition(restarts() == 0 && events.filter { $0 == .waitingForPage }.count == 2 && pages.isEmpty)
+        idleFailures = 3; pages = [settings]; calls = []
+        do { _ = try await adapter.run(account: account, pending: false, started: {}, finished: {}); preconditionFailure("Unstable page accepted") } catch CleanupIssue.unstable {}
+        precondition(restarts() == 0 && !calls.contains { $0.starts(with: ["exec-out", "cat"]) })
+        print("PASS: animation retries use fresh snapshots, remain bounded, and do not restart Photos")
+
+        pages = [settings, settings]; calls = []
+        let cancelledRecovery = Task { @MainActor in
+            try await adapter.run(account: account, pending: false, progress: {
+                if $0 == .restartingPhotos { withUnsafeCurrentTask { $0?.cancel() } }
+            }, started: { preconditionFailure("Cancelled recovery cleaned") }, finished: {})
+        }
+        do { _ = try await cancelledRecovery.value; preconditionFailure("Cancelled recovery continued") } catch is CancellationError {}
+        precondition(restarts() == 0 && taps() == 0)
+        print("PASS: cancellation before recovery prevents force-stop and all cleanup taps")
+
         var pending = false
         pages = [home, menu, confirm, confirm]; calls = []
         let cancelled = Task { @MainActor in

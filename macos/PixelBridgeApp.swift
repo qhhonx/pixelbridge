@@ -715,6 +715,22 @@ struct ContentView: View {
                     Button(tr(.settings_privacy_action)) { model.showSettings() }.buttonStyle(ActionStyle())
                 }
                 Surface {
+                    Label(tr(.logs_title), systemImage: "text.alignleft").font(.system(size: 16, weight: .medium))
+                    PreferenceRow(title: tr(.settings_log_days)) {
+                        NumberControl(title: tr(.settings_log_days), value: $model.logRetentionDays, range: NumericPreference.logRetentionDays.range, unit: tr(.unit_days))
+                    }
+                    Divider()
+                    PreferenceRow(title: tr(.settings_log_size)) {
+                        NumberControl(title: tr(.settings_log_size), value: $model.logStorageMB, range: NumericPreference.logStorageMB.range, unit: "MB")
+                    }
+                    Text(tr(.logs_retention, String(model.logRetentionDays), String(model.logStorageMB))).font(.caption).foregroundStyle(Palette.muted)
+                    HStack(spacing: 12) {
+                        Button(tr(.logs_history), systemImage: "folder") { model.showLogHistory() }
+                        Button(tr(.logs_export), systemImage: "square.and.arrow.up") { model.exportLogs() }.disabled(model.exportingLogs)
+                    }.buttonStyle(ActionStyle())
+                    if model.logStorageFailed {
+                        Label(tr(.logs_write_failed), systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                    }
                     DisclosureGroup(isExpanded: $showLogs) {
                         VStack(alignment: .leading, spacing: 12) {
                             Text(tr(.logs_original_language)).font(.caption).foregroundStyle(Palette.muted)
@@ -727,7 +743,7 @@ struct ContentView: View {
                                     .textSelection(.enabled)
                             }
                         }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 16)
-                    } label: { Label(tr(.logs_title), systemImage: "text.alignleft").font(.system(size: 14, weight: .medium)) }
+                    } label: { Text(tr(.logs_recent)).font(.system(size: 14, weight: .medium)) }
                 }
                 HStack(spacing: 6) {
                     Text("PixelBridge")

@@ -40,6 +40,7 @@ import Foundation
         precondition(BridgeModel().autoReclaimCache)
         model.autoRunning = false
         let fields: [(NumericPreference, ReferenceWritableKeyPath<BridgeModel, Int>)] = [
+            (.logRetentionDays, \.logRetentionDays), (.logStorageMB, \.logStorageMB),
             (.intervalMinutes, \.intervalMinutes), (.macReserveGB, \.macReserveGB),
             (.pixelReserveGB, \.pixelReserveGB), (.maxTemperatureC, \.maxTemperatureC),
             (.concurrentTasks, \.concurrentTasks)
