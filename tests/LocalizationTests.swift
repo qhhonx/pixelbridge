@@ -14,7 +14,9 @@ import Foundation
         for language in ["en", "zh-Hans"] {
             let catalog = L10n.catalogs[language]!
             precondition(Set(catalog.keys) == keys)
-            precondition(catalog.values.allSatisfy { !$0.isEmpty })
+            precondition(catalog.values.allSatisfy { !$0.isEmpty && !$0.contains("%@") })
+            precondition(L10n.text(.cleanup_description, arguments: ["6"], language: language).contains("6 GB"))
+            precondition(L10n.text(.cleanup_finished, arguments: ["2 GB"], language: language).contains("2 GB"))
             for key in TextKey.allCases {
                 let rendered = L10n.text(key, arguments: ["{1}-filename", "second", "third"], language: language)
                 precondition(rendered != key.rawValue)

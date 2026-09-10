@@ -596,7 +596,7 @@ struct ContentView: View {
                             .padding(.horizontal, 12).padding(.vertical, 6)
                             .background(Palette.filter, in: Capsule())
                     }
-                    Text(tr(.cleanup_description)).font(.system(size: 14))
+                    Text(tr(.cleanup_description, String(model.pixelCleanupThresholdGB))).font(.system(size: 14))
                         .foregroundStyle(Palette.muted).fixedSize(horizontal: false, vertical: true)
                     Divider()
                     Label(model.cleanupMessage.text, systemImage: "info.circle")

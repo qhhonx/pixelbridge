@@ -1,11 +1,10 @@
-PixelBridge 0.1.0-beta.6 — a home for experiments and more flexible cleanup compatibility.
+PixelBridge 0.1.0-beta.7 — show the effective Pixel cleanup threshold.
 
-- Add a dedicated Experiments page in the sidebar. Automatic Pixel space cleanup moves here with independent enable/disable controls, status and a non-destructive Check again action.
-- Remove the exact Google Photos version requirement. Recognized UI controls and safety messages determine compatibility; unknown or ambiguous screens still stop without guessing.
-- Strengthen Check and enable: navigate to the official device-cleanup confirmation or empty page without pressing the cleanup action. Actual cleanup always rechecks the account, backup-complete state and affirmative confirmation.
-- Preserve existing enabled preferences, account bindings and unfinished cleanup records across the update.
+The Experiments page now displays the calculated cleanup threshold in GB instead of asking users to interpret a formula. The description updates when the Pixel reserve changes and uses the same value as the cleanup scheduler. Available in English and Chinese.
 
-Currently targets original Pixel / Pixel XL on Android 10, with recognized Chinese/English screens. The on-device baseline remains Google Photos 7.91.0.973540846 in Chinese; other version numbers and English screens have simulated coverage, not a universal compatibility guarantee. Pause backup before changing experiment settings.
+Also correct the cleanup-completed message so it displays the amount of space freed.
+
+For example, a 1 GB reserve displays “below 3 GB”; a 5 GB reserve displays “below 6 GB”.
 
 Free macOS beta for Apple Silicon, macOS 14+.
 

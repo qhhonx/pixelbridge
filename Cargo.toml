@@ -1,6 +1,6 @@
 [package]
 name = "pixelbridge"
-version = "0.1.0-beta.6"
+version = "0.1.0-beta.7"
 edition = "2021"
 description = "Prepare Apple Live Photos for Google Photos backup through a first-generation Pixel"
 license = "MIT"

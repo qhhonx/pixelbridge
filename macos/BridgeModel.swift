@@ -86,6 +86,9 @@ final class BridgeModel: ObservableObject {
             if pixelReserveGB != bounded { pixelReserveGB = bounded }
         }
     }
+    // Shared by the experiment description and the actual cleanup trigger.
+    var pixelCleanupThresholdGB: Int { max(3, pixelReserveGB + 1) }
+
     @Published var maxTemperatureC = NumericPreference.maxTemperatureC.read() {
         didSet {
             let bounded = NumericPreference.maxTemperatureC.save(maxTemperatureC)
@@ -550,7 +553,7 @@ final class BridgeModel: ObservableObject {
         let serial = selectedDevice
         let adapter = PixelCleanup(adb: adbPath, serial: serial)
         // Start earlier than the hard stop and account for the user's chosen reserve.
-        let trigger = max(3, pixelReserveGB + 1)
+        let trigger = pixelCleanupThresholdGB
         let available = try await adapter.freeBytes()
         if !force && !pending && available >= Int64(trigger) * 1_000_000_000 { return }
         if !pending && Date().timeIntervalSince(lastCleanupAttempt) < 600 {
