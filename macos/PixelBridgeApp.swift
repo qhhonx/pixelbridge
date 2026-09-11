@@ -425,6 +425,22 @@ struct ContentView: View {
                 SectionHeading(title: tr(.tasks_heading), detail: tr(.tasks_summary, String(describing: model.rows.count.formatted()), String(describing: model.failed)))
                 Button(tr(.tasks_retry)) { model.retryNow() }.buttonStyle(ActionStyle()).disabled(model.pausing || model.failed == 0)
             }
+            HStack {
+                if let selected = visibleRows.first(where: { $0.id == selectedTask }) {
+                    if selected.phase == "skipped" {
+                        Button(tr(.tasks_restore), systemImage: "arrow.uturn.backward") { Task { await model.restoreTask(selected) } }
+                            .disabled(model.taskMutationIDs.contains(selected.id))
+                    } else {
+                        Button(tr(.tasks_skip), systemImage: "minus.circle") { Task { await model.skipTasks([selected]) } }
+                            .disabled(!model.canSkipTask(selected))
+                    }
+                }
+                Spacer()
+                Button(tr(.tasks_skip_filtered_failed)) {
+                    Task { await model.skipTasks(visibleRows.filter { $0.phase == "failed" }) }
+                }.disabled(!visibleRows.contains { $0.phase == "failed" && model.canSkipTask($0) })
+            }.buttonStyle(ActionStyle())
+            Text(tr(.tasks_skip_notice)).font(.system(size: 12)).foregroundStyle(Palette.muted)
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 16) {
                     Picker(tr(.tasks_column_status), selection: $taskStatusFilter) {

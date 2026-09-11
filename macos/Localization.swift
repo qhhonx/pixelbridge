@@ -1,6 +1,16 @@
 import Foundation
 
 enum TextKey: String, CaseIterable {
+    case queue_skipped
+    case tasks_skip
+    case tasks_restore
+    case tasks_skip_filtered_failed
+    case tasks_skip_notice
+    case tasks_skipped_by_user
+    case tasks_stopped_reason
+    case tasks_skip_logged
+    case tasks_restored
+
     case settings_log_days
     case settings_log_size
     case unit_days

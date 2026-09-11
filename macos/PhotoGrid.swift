@@ -37,7 +37,7 @@ enum ThumbnailStore {
             if let cached { asset = cached }
             else {
                 asset = await Task.detached(priority: .userInitiated) {
-                    PHAsset.fetchAssets(withLocalIdentifiers: [id], options: nil).firstObject
+                    PHAsset.fetchAssets(withLocalIdentifiers: [id], options: libraryFetchOptions()).firstObject
                 }.value
             }
             guard !Task.isCancelled, !ticket.cancelled, let asset else { return }
@@ -259,6 +259,7 @@ func photoStatusSymbol(_ state: TextKey) -> String {
     case .gallery_processing: return "arrow.triangle.2.circlepath"
     case .queue_retry_queued: return "arrow.clockwise"
     case .queue_failed: return "exclamationmark.circle.fill"
+    case .queue_skipped: return "minus.circle"
     default: return "clock"
     }
 }

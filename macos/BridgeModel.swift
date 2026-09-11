@@ -11,6 +11,7 @@ final class BridgeModel: ObservableObject {
     }
     @Published private(set) var phases: [String: String] = [:]
     @Published private(set) var pendingRetryIDs: Set<String> = []
+    @Published private(set) var taskMutationIDs: Set<String> = []
     @Published private(set) var pausing = false
     @Published private(set) var galleryRevision = 0
     @Published private(set) var lastLibraryRefresh: Date?
@@ -136,6 +137,9 @@ final class BridgeModel: ObservableObject {
     #if PIXELBRIDGE_TESTING
     var testBatchOperation: (() async -> Void)?
     var testPrepareBatch: (() async throws -> Void)?
+    var testCoreURL: URL?
+    func testReloadQueue() async throws { try await refreshQueue() }
+    func testSetRetry(_ id: String, _ value: RetryInfo) { retries[id] = value }
     var testGuardDevice: (() async throws -> Void)?
     var testProcessItem: ((LibraryItem, QueueRow?) async throws -> Void)?
     var testPrepareItem: ((LibraryItem, QueueRow?) async throws -> PreparedDelivery)?
@@ -156,7 +160,12 @@ final class BridgeModel: ObservableObject {
         else if !cleanupHoldDevice.isEmpty && pixelCleanupEnabled { cleanupMessage = Message(.cleanup_holding) }
         else if pixelCleanupEnabled { cleanupMessage = Message(.cleanup_enabled) }
     }
-    private var core: URL { Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("pixelbridge-core") }
+    private var core: URL {
+        #if PIXELBRIDGE_TESTING
+        if let testCoreURL { return testCoreURL }
+        #endif
+        return Bundle.main.executableURL!.deletingLastPathComponent().appendingPathComponent("pixelbridge-core")
+    }
     private var exiftool: URL { Bundle.main.resourceURL!.appendingPathComponent("exiftool/exiftool") }
     var needsAttention: Bool { [.status_waiting, .status_attention].contains(status.key) }
     var delivered: Int { rows.filter(\.delivered).count }
@@ -231,9 +240,8 @@ final class BridgeModel: ObservableObject {
         let previousItems = library
         let hadSnapshot = observedAssets != nil
         let result = await Task.detached(priority: .utility) { () -> ([LibraryItem], Int, Message, PHFetchResult<PHAsset>, [String: [LibraryItem]], Int) in
-            let options = PHFetchOptions()
+            let options = libraryFetchOptions()
             options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
-            options.includeAllBurstAssets = true
             let assets = PHAsset.fetchAssets(with: options)
             await MainActor.run { self.totalAssets = assets.count }
             let previous = Dictionary(uniqueKeysWithValues: previousItems.map { ($0.id, $0) })
@@ -369,6 +377,32 @@ final class BridgeModel: ObservableObject {
         for id in failedIDs { retries[id] = nil }
         saveRetries()
     }
+    func canSkipTask(_ row: QueueRow) -> Bool {
+        !row.delivered && row.phase != "skipped" && !activeIDs.contains(row.id) && !taskMutationIDs.contains(row.id)
+    }
+    func skipTasks(_ selected: [QueueRow]) async {
+        let ids = Set(selected.filter(canSkipTask).map(\.id))
+        taskMutationIDs.formUnion(ids)
+        defer { taskMutationIDs.subtract(ids) }
+        for id in ids.sorted() {
+            do {
+                guard let row = rows.first(where: { $0.id == id }), !row.delivered, !activeIDs.contains(id) else { continue }
+                try await transition(id, "skipped", message: tr(.tasks_skipped_by_user))
+                pendingRetryIDs.remove(id); retries[id] = nil; saveRetries()
+                log(tr(.tasks_skip_logged, row.filename))
+            } catch { report(error); break }
+        }
+    }
+    func restoreTask(_ row: QueueRow) async {
+        guard row.phase == "skipped", !taskMutationIDs.contains(row.id) else { return }
+        taskMutationIDs.insert(row.id)
+        defer { taskMutationIDs.remove(row.id) }
+        do {
+            try await transition(row.id, "failed", message: tr(.tasks_restored))
+            retries[row.id] = nil; pendingRetryIDs.insert(row.id); saveRetries()
+            if autoRunning { nextRun = Date() }
+        } catch { report(error) }
+    }
     func taskStatus(_ row: QueueRow) -> TaskStatusFilter {
         TaskStatusFilter.status(of: row, requested: pendingRetryIDs, activeID: busy ? currentItem?.id : nil, activeIDs: activeIDs)
     }
@@ -421,7 +455,7 @@ final class BridgeModel: ObservableObject {
             busy = false; currentName = ""; currentItem = nil
             activeTransfers.removeAll(); pixelReservations.removeAll()
             if autoRunning {
-                let available = Set(library.map(\.id)).subtracting(rows.filter(\.delivered).map(\.id))
+                let available = Set(library.map(\.id)).subtracting(rows.filter { $0.delivered || $0.phase == "skipped" }.map(\.id))
                 nextRun = nextBackupCheck(now: Date(), interval: Double(intervalMinutes * 60),
                     interrupted: interrupted, urgent: newAssetsPending || (madeAttempt && !pendingRetryIDs.isEmpty),
                     retries: retries, eligibleIDs: available)
@@ -477,6 +511,7 @@ final class BridgeModel: ObservableObject {
     }
     private func executeItem(_ item: LibraryItem, prior: QueueRow?) async throws -> Bool {
         try Task.checkCancellation()
+        guard !taskMutationIDs.contains(item.id), !rows.contains(where: { $0.id == item.id && ($0.phase == "skipped" || $0.delivered) }) else { return false }
         activeTransfers[item.id] = ActiveTransfer(item: item, filename: item.name)
         updateFocus()
         pendingRetryIDs.remove(item.id)
@@ -507,12 +542,18 @@ final class BridgeModel: ObservableObject {
                 retries[item.id] = nil; saveRetries()
                 throw error
             }
-            retries[item.id] = nextRetry(previous: retries[item.id], now: Date())
+            let retry = nextRetry(previous: retries[item.id], now: Date())
+            let stopped = shouldStopAutomaticRetry(error, attempts: retry.attempts)
             let name = activeTransfers[item.id]?.filename ?? item.name
-            if prior == nil { _ = try? await invoke(["queue-add", "--state-dir", state.path, "--asset-id", item.id, "--filename", name]) }
-            try? await transition(item.id, "failed", message: error.localizedDescription)
+            let reason = stopped ? tr(.tasks_stopped_reason, error.localizedDescription) : error.localizedDescription
+            retries[item.id] = retry
             saveRetries()
-            log("\(name): \(error.localizedDescription)")
+            // If the durable queue write fails, stop the batch instead of silently
+            // rediscovering an unrecorded failure on every scheduling pass.
+            if prior == nil { _ = try await invoke(["queue-add", "--state-dir", state.path, "--asset-id", item.id, "--filename", name]) }
+            try await transition(item.id, stopped ? "skipped" : "failed", message: reason)
+            if stopped { retries[item.id] = nil; saveRetries() }
+            log("\(name): \(reason)")
             return false
         }
     }
@@ -763,7 +804,8 @@ final class BridgeModel: ObservableObject {
         #if PIXELBRIDGE_TESTING
         if let testPrepareItem { return try await testPrepareItem(item, prior) }
         #endif
-        let assetResult = PHAsset.fetchAssets(withLocalIdentifiers: [item.id], options: nil)
+        guard [.authorized, .limited].contains(PHPhotoLibrary.authorizationStatus(for: .readWrite)) else { throw fail(Message(.error_photos_permission)) }
+        let assetResult = PHAsset.fetchAssets(withLocalIdentifiers: [item.id], options: libraryFetchOptions())
         guard let asset = assetResult.firstObject else { throw fail(Message(.error_asset_missing)) }
         let resources = PHAssetResource.assetResources(for: asset)
         let videoAsset = asset.mediaType == .video

@@ -305,3 +305,70 @@ fn measured_size_survives_transitions_reopen_and_additive_metadata_upgrade() {
     assert_eq!(item.phase, QueuePhase::Transferred);
     assert_eq!(item.sha256.as_deref(), Some("proof"));
 }
+
+#[test]
+fn skipped_tasks_survive_reopen_and_require_explicit_restore() {
+    let fixture = Fixture::new();
+    let proof = "a".repeat(64);
+    {
+        let queue = Queue::open(&fixture.0).unwrap();
+        queue.add("skip", "original.jpg").unwrap();
+        queue
+            .transition("skip", QueuePhase::Exporting, None, None, None)
+            .unwrap();
+        queue
+            .transition("skip", QueuePhase::Prepared, Some(&proof), None, None)
+            .unwrap();
+        queue
+            .transition(
+                "skip",
+                QueuePhase::Skipped,
+                None,
+                None,
+                Some("User skipped"),
+            )
+            .unwrap();
+        assert!(queue
+            .transition("skip", QueuePhase::Exporting, None, None, None)
+            .is_err());
+        assert!(queue
+            .transition(
+                "skip",
+                QueuePhase::Transferred,
+                None,
+                Some("/sdcard/file"),
+                None
+            )
+            .is_err());
+    }
+    let queue = Queue::open(&fixture.0).unwrap();
+    let saved = queue.item("skip").unwrap().unwrap();
+    assert_eq!(saved.phase, QueuePhase::Skipped);
+    assert_eq!(saved.sha256.as_deref(), Some(proof.as_str()));
+    assert_eq!(saved.message.as_deref(), Some("User skipped"));
+    queue
+        .transition("skip", QueuePhase::Failed, None, None, None)
+        .unwrap();
+    queue
+        .transition("skip", QueuePhase::Exporting, None, None, None)
+        .unwrap();
+    queue
+        .transition("skip", QueuePhase::Prepared, Some(&proof), None, None)
+        .unwrap();
+    queue
+        .transition(
+            "skip",
+            QueuePhase::Transferred,
+            None,
+            Some("/sdcard/file"),
+            None,
+        )
+        .unwrap();
+    assert!(queue
+        .transition("skip", QueuePhase::Skipped, None, None, None)
+        .is_err());
+    assert_eq!(
+        queue.item("skip").unwrap().unwrap().phase,
+        QueuePhase::Transferred
+    );
+}

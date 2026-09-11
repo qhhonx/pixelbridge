@@ -23,6 +23,7 @@ pub enum QueuePhase {
     BackupSeen,
     MotionVerified,
     Failed,
+    Skipped,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -69,6 +70,7 @@ impl QueuePhase {
             Self::BackupSeen => "backup_seen",
             Self::MotionVerified => "motion_verified",
             Self::Failed => "failed",
+            Self::Skipped => "skipped",
         }
     }
 }
@@ -359,6 +361,8 @@ fn valid_transition(from: QueuePhase, to: QueuePhase) -> bool {
                 Failed
             )
             | (Failed, Exporting)
+            | (Discovered | Exporting | Prepared | Failed, Skipped)
+            | (Skipped, Failed)
     )
 }
 

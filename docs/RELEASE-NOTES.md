@@ -1,11 +1,12 @@
-PixelBridge 0.1.0-beta.12 — automatic cleanup recovery and retained activity logs.
+PixelBridge 0.1.0-beta.13 — stop repeated failures and manage skipped tasks.
 
-- Recover once from an unrecognized Google Photos navigation page by force-stopping and reopening the app, then checking the account and official cleanup confirmation again.
-- Never restart Photos to recover an unresolved cleanup action. Retry transient UI animation reads without using stale page data.
-- Retain activity logs in daily, size-limited files instead of overwriting everything beyond 200 entries. Import existing activity logs on upgrade.
-- Configure log retention from 1–90 days and total storage from 10–500 MB in Settings; defaults are 7 days and 50 MB. Older files are removed first.
-- Open retained history or export it to one text file. File operations run on a background queue; the preview remains limited to 15 entries.
-- Show log-storage failures and cleanup recovery stages in the app.
+- Remove an inactive task from the retry queue, or skip failed tasks matching the current filters. Skipped tasks stay in history and can be explicitly restored.
+- Preserve skipped state across restarts, automatic resume and bulk retries. Keep originals, transferred files and existing queue history.
+- Stop automatic retries for inaccessible assets, missing resources and unsupported formats. Other item-specific errors stop after five consecutive failures; environmental interruptions remain recoverable.
+- Use consistent PhotoKit fetch options for library scans, original lookup and thumbnails, including all burst members.
+- Stop a batch if recording a failure in the durable queue fails, instead of silently rediscovering the same error.
+
+Known limitation: the cause of the reported inaccessible assets is still under investigation. Matching burst fetch options addresses a confirmed code inconsistency; it does not prove every affected asset was a burst member. A skipped task is neither a confirmed deletion nor a completed backup. Restore it after the underlying issue is resolved.
 
 Free macOS beta for Apple Silicon, macOS 14+.
 

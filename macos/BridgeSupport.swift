@@ -15,7 +15,7 @@ struct QueueRow: Decodable, Identifiable {
     var id: String { asset_id }
     var delivered: Bool { ["transferred", "backup_seen", "motion_verified"].contains(phase) }
     var label: String {
-        ["discovered": tr(.queue_discovered), "exporting": tr(.queue_exporting), "prepared": tr(.queue_prepared), "transferred": tr(.metric_delivered), "backup_seen": tr(.queue_backed_up), "motion_verified": tr(.queue_motion_verified), "failed": tr(.queue_failed)][phase] ?? phase
+        ["discovered": tr(.queue_discovered), "exporting": tr(.queue_exporting), "prepared": tr(.queue_prepared), "transferred": tr(.metric_delivered), "backup_seen": tr(.queue_backed_up), "motion_verified": tr(.queue_motion_verified), "failed": tr(.queue_failed), "skipped": tr(.queue_skipped)][phase] ?? phase
     }
 }
 struct LibraryItem: Identifiable, Equatable {
@@ -247,7 +247,7 @@ final class LibraryObserver: NSObject, PHPhotoLibraryChangeObserver {
 }
 
 func shouldTransfer(phase: String?, retryAt: Date?, now: Date) -> Bool {
-    guard !["transferred", "backup_seen", "motion_verified"].contains(phase ?? "") else { return false }
+    guard !["transferred", "backup_seen", "motion_verified", "skipped"].contains(phase ?? "") else { return false }
     return (retryAt ?? .distantPast) <= now
 }
 
@@ -289,6 +289,7 @@ enum NumericPreference: String, CaseIterable {
 }
 
 func photoDeliveryState(phase: String?, retry: Bool, active: Bool) -> TextKey {
+    if phase == "skipped" { return .queue_skipped }
     if ["backup_seen", "motion_verified"].contains(phase ?? "") { return .queue_backed_up }
     if phase == "transferred" { return .metric_delivered }
     if active { return .gallery_processing }
@@ -301,7 +302,7 @@ func photoDeliveryState(phase: String?, retry: Bool, active: Bool) -> TextKey {
 func isTemporaryInterruption(_ error: Error, depth: Int = 0) -> Bool {
     guard depth < 8 else { return false }
     if let failure = error as? BridgeFailure,
-       [.cleanup_draining, .error_pixel_temperature, .error_pixel_storage, .error_pixel_disconnected,
+       [.error_photos_permission, .cleanup_draining, .error_pixel_temperature, .error_pixel_storage, .error_pixel_disconnected,
         .error_pixel_waiting, .error_pixel_generation, .error_cache_budget, .error_mac_storage,
         .error_download_budget, .error_icloud_timeout, .error_timeout].contains(failure.message.key) { return true }
     let ns = error as NSError
@@ -318,6 +319,19 @@ func isTemporaryInterruption(_ error: Error, depth: Int = 0) -> Bool {
             "pixel is too warm", "below the batch reserve"].contains { text.contains($0) }
 }
 
+// Keep scan, export and thumbnail membership identical, including burst siblings.
+func libraryFetchOptions() -> PHFetchOptions {
+    let options = PHFetchOptions()
+    options.includeAllBurstAssets = true
+    return options
+}
+func shouldStopAutomaticRetry(_ error: Error, attempts: Int) -> Bool {
+    if isTemporaryInterruption(error) { return false }
+    if let key = (error as? BridgeFailure)?.message.key,
+       [.error_asset_missing, .error_original_missing, .error_motion_missing, .error_format_unsupported].contains(key) { return true }
+    return attempts >= 5
+}
+
 func nextRetry(previous: RetryInfo?, now: Date) -> RetryInfo {
     let attempts = min(30, (previous?.attempts ?? 0) + 1)
     return RetryInfo(attempts: attempts, next: now.addingTimeInterval(min(300, 30 * pow(2, Double(min(attempts - 1, 4))))))
@@ -332,9 +346,10 @@ func nextBackupCheck(now: Date, interval: TimeInterval, interrupted: Bool,
 }
 
 enum TaskStatusFilter: String, CaseIterable {
-    case all, failed, queued, waiting, processing, delivered
+    case all, failed, queued, waiting, processing, delivered, skipped
     var title: TextKey {
         switch self {
+        case .skipped: return .queue_skipped
         case .all: return .tasks_status_all
         case .failed: return .queue_failed
         case .queued: return .queue_retry_queued
@@ -345,6 +360,7 @@ enum TaskStatusFilter: String, CaseIterable {
     }
     static func status(of row: QueueRow, requested: Set<String>, activeID: String?, activeIDs: Set<String> = []) -> Self {
         if row.delivered { return .delivered }
+        if row.phase == "skipped" { return .skipped }
         if activeID == row.id || activeIDs.contains(row.id) { return .processing }
         if requested.contains(row.id) { return .queued }
         if row.phase == "failed" { return .failed }
@@ -352,6 +368,7 @@ enum TaskStatusFilter: String, CaseIterable {
     }
     var symbol: String {
         switch self {
+        case .skipped: return "minus.circle"
         case .all: return "line.3.horizontal.decrease.circle"
         case .failed: return "exclamationmark.circle"
         case .queued: return "arrow.clockwise.circle"

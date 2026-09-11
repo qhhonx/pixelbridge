@@ -33,3 +33,13 @@ The cleanup adapter emits transient stage events before navigation and reads rea
 ## Activity log retention
 
 A serial background queue appends runtime messages to daily UTC log files under `State/Logs`, rotating individual files at 5 MB. Settings persist retention (1–90 calendar days, default 7) and total storage (10–500 MB, default 50). Writes, startup reads and exports prune expired files and then the oldest files over budget. Lowered limits apply at the next such operation; the UI keeps only 200 recent entries in memory and previews 15. The legacy `State/activity.log` is copied once before removal, with its modification day preserved. An export waits behind accepted writes and streams retained files into a temporary text file before replacing the user-selected destination. Failures leave source logs intact and surface in the UI.
+
+## Skipped transfer tasks
+
+`skipped` is a durable SQLite queue phase. Undelivered, inactive tasks can be skipped individually or as a filtered failure set. Skip changes preserve files and queue history. A skipped task can only return through an explicit transition to `failed`; resume, rescans and bulk retry do not include skipped rows. Candidate execution checks current skip/mutation state again so a stale batch snapshot cannot start a newly skipped task.
+
+The scan, original lookup and thumbnails use the same PhotoKit fetch options, including all burst members. Missing assets/resources and unsupported formats stop automatic retries immediately; other item-specific failures stop after five consecutive failures. Environmental interruptions do not consume this budget. A failed durable queue write stops the batch instead of swallowing the error. A stop is not evidence that the original was deleted: limited library access and library changes can make an asset inaccessible. Users can restore the task after resolving the issue.
+
+### Outstanding asset-access investigation
+
+The reported missing-asset errors have not been tied to specific asset identities or resource types. The log display names are not unique identifiers. Verify affected local identifiers against the current library with consistent fetch options, then inspect burst membership, media subtypes, resource types, hidden state and authorization. Distinguish lookup failure from unavailable iCloud resources and export failure. Preserve queue identity and originals during diagnosis. No claim of deletion or resolved root cause follows from the new skipped state.
