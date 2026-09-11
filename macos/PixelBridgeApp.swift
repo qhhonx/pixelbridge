@@ -526,6 +526,7 @@ struct ContentView: View {
                         }
                         DisclosureGroup(tr(.tasks_file_details)) {
                             VStack(alignment: .leading, spacing: 8) {
+                                Text(tr(.tasks_diagnostic_id, stableID(row.id))).textSelection(.enabled)
                                 if let remote = row.remote { Text(remote).textSelection(.enabled) }
                                 if let hash = row.sha256 { Text("SHA-256  " + hash).textSelection(.enabled) }
                             }.font(.system(size: 10, design: .monospaced)).foregroundStyle(Palette.muted).padding(.top, 8)
@@ -739,6 +740,7 @@ struct ContentView: View {
                     PreferenceRow(title: tr(.settings_log_size)) {
                         NumberControl(title: tr(.settings_log_size), value: $model.logStorageMB, range: NumericPreference.logStorageMB.range, unit: "MB")
                     }
+                    Text(tr(.logs_diagnostics_notice)).font(.caption).foregroundStyle(Palette.muted)
                     Text(tr(.logs_retention, String(model.logRetentionDays), String(model.logStorageMB))).font(.caption).foregroundStyle(Palette.muted)
                     HStack(spacing: 12) {
                         Button(tr(.logs_history), systemImage: "folder") { model.showLogHistory() }

@@ -322,5 +322,8 @@
   "cleanup_reconciled": "已确认上次清理操作结束，正在检查剩余空间；未发起新的清理。",
   "cleanup_space_low": "清理操作已结束，但 Pixel 可用空间仅 {0}，恢复传输至少需要 {1}；继续等待释放空间。",
   "cleanup_space_restored": "Pixel 可用空间已恢复至 {0}，允许继续传输。",
-  "settings_pixel_reserve_description": "传输和自动清理共用这一设置。传输前同时预留待传文件与并发任务所需空间，无法满足时先停止传输。"
+  "settings_pixel_reserve_description": "传输和自动清理共用这一设置。传输前同时预留待传文件与并发任务所需空间，无法满足时先停止传输。",
+  "log_task_failure_context": "{0}：{1} · 诊断 ID {2}",
+  "tasks_diagnostic_id": "诊断 ID  {0}",
+  "logs_diagnostics_notice": "导出包含任务阶段、资源信息、错误及重试决定，可通过诊断 ID 关联多次尝试。不包含照片内容；运行记录可能包含文件名，分享前请检查。"
 }

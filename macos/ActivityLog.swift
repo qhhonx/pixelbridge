@@ -26,6 +26,12 @@ final class ActivityLogger: @unchecked Sendable {
             catch { completion(false) }
         }
     }
+    func diagnostic(_ record: DiagnosticRecord, completion: @escaping @Sendable (Bool) -> Void) {
+        queue.async {
+            do { try self.store.appendDiagnostic(record.data()); completion(true) }
+            catch { completion(false) }
+        }
+    }
     func export(to destination: URL) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             queue.async {
@@ -67,10 +73,15 @@ final class ActivityLogStore {
     private func files() throws -> [URL] {
         try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
             .filter {
-                guard $0.lastPathComponent.range(of: #"^activity-\d{4}-\d{2}-\d{2}-(\d{6}|legacy)\.log$"#, options: .regularExpression) != nil else { return false }
+                guard $0.lastPathComponent.range(of: #"^(activity-\d{4}-\d{2}-\d{2}-(\d{6}|legacy)\.log|diagnostic-\d{4}-\d{2}-\d{2}-\d{6}\.jsonl)$"#, options: .regularExpression) != nil else { return false }
                 let values = try $0.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
                 return values.isRegularFile == true && values.isSymbolicLink != true
-            }.sorted { $0.lastPathComponent.replacingOccurrences(of: "legacy", with: "!") < $1.lastPathComponent.replacingOccurrences(of: "legacy", with: "!") }
+            }.sorted { sortKey($0) < sortKey($1) }
+    }
+    private func sortKey(_ file: URL) -> String {
+        // Date first across both streams, then sequence; import precedes fresh activity.
+        let parts = file.lastPathComponent.split(separator: "-")
+        return parts.dropFirst().joined(separator: "-").replacingOccurrences(of: "legacy", with: "!") + String(parts[0])
     }
     private func size(_ file: URL) throws -> Int {
         try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
@@ -98,19 +109,28 @@ final class ActivityLogStore {
         let cutoff = formatter.string(from: calendar.date(byAdding: .day, value: -(days - 1), to: now())!)
         var retained: [(URL, Int)] = []
         for file in try files() {
-            let day = String(file.lastPathComponent.dropFirst("activity-".count).prefix(10))
+            let day = String(file.lastPathComponent.split(separator: "-").dropFirst().prefix(3).joined(separator: "-"))
             if day < cutoff { try fm.removeItem(at: file) }
             else { retained.append((file, try size(file))) }
         }
         var bytes = retained.reduce(0) { $0 + $1.1 }
+        // The streams rotate independently; sequence numbers are not comparable.
+        // Prune older days first, then the least recently written segment that day.
+        let modified = try Dictionary(uniqueKeysWithValues: retained.map { file, _ in
+            (file, try file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate ?? .distantPast)
+        })
+        retained.sort { lhs, rhs in
+            let leftDay = String(sortKey(lhs.0).prefix(10)), rightDay = String(sortKey(rhs.0).prefix(10))
+            if leftDay != rightDay { return leftDay < rightDay }
+            if modified[lhs.0] != modified[rhs.0] { return modified[lhs.0]! < modified[rhs.0]! }
+            return sortKey(lhs.0) < sortKey(rhs.0)
+        }
         for (file, count) in retained where bytes > totalBytes {
             try fm.removeItem(at: file); bytes -= count
         }
     }
     func append(_ line: String) throws {
         try prepare()
-        let dayPrefix = "activity-" + formatter.string(from: now()) + "-"
-        let today = try files().filter { $0.lastPathComponent.hasPrefix(dayPrefix) && !$0.lastPathComponent.contains("legacy") }
         var data = Data(line.replacingOccurrences(of: "\n", with: " ").utf8)
         let limit = min(16_384, segmentBytes - 1)
         if data.count > limit {
@@ -118,12 +138,25 @@ final class ActivityLogStore {
             while String(data: data, encoding: .utf8) == nil { data.removeLast() }
             data.append(Data("… [truncated]".utf8))
         }
-        data.append(10)
+        try write(data, stream: "activity", extension: "log")
+    }
+    func appendDiagnostic(_ data: Data) throws {
+        // Never byte-truncate JSON; reject an oversized record without corrupting the stream.
+        guard data.count + 1 <= segmentBytes, data.count <= 128_000 else { throw CocoaError(.fileWriteOutOfSpace) }
+        guard !data.contains(10), !data.contains(13),
+              try JSONSerialization.jsonObject(with: data) is [String: Any] else { throw CocoaError(.fileWriteInapplicableStringEncoding) }
+        try prepare()
+        try write(data, stream: "diagnostic", extension: "jsonl")
+    }
+    private func write(_ input: Data, stream: String, extension suffix: String) throws {
+        var data = input; data.append(10)
+        let dayPrefix = stream + "-" + formatter.string(from: now()) + "-"
+        let today = try files().filter { $0.lastPathComponent.hasPrefix(dayPrefix) && !$0.lastPathComponent.contains("legacy") }
         let target: URL
         if let last = today.last, try size(last) + data.count <= segmentBytes { target = last }
         else {
             let index = today.last.flatMap { Int($0.deletingPathExtension().lastPathComponent.suffix(6)) }.map { $0 + 1 } ?? 0
-            target = directory.appendingPathComponent(dayPrefix + String(format: "%06d", index) + ".log")
+            target = directory.appendingPathComponent(dayPrefix + String(format: "%06d", index) + "." + suffix)
             guard fm.createFile(atPath: target.path, contents: nil) else { throw CocoaError(.fileWriteUnknown) }
         }
         let handle = try FileHandle(forWritingTo: target)
@@ -134,7 +167,7 @@ final class ActivityLogStore {
     func recent(limit: Int = 200) throws -> [String] {
         try prepare()
         var result: [String] = []
-        for file in try files().reversed() {
+        for file in try files().reversed() where file.pathExtension == "log" {
             let text = try String(contentsOf: file, encoding: .utf8)
             result.append(contentsOf: text.split(separator: "\n").suffix(max(0, limit - result.count)).reversed().map(String.init))
             if result.count >= limit { break }
@@ -151,9 +184,17 @@ final class ActivityLogStore {
         defer { try? output.close() }
         for file in try files() {
             try output.write(contentsOf: Data(("=== " + file.lastPathComponent + " ===\n").utf8))
-            let input = try FileHandle(forReadingFrom: file)
-            defer { try? input.close() }
-            while let data = try input.read(upToCount: 64 * 1024), !data.isEmpty { try output.write(contentsOf: data) }
+            if file.pathExtension == "log" {
+                // Legacy activity messages can contain paths/URLs embedded by subprocesses.
+                let text = try String(contentsOf: file, encoding: .utf8)
+                for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+                    try output.write(contentsOf: Data((DiagnosticPrivacy.text(String(line)) + "\n").utf8))
+                }
+            } else {
+                let input = try FileHandle(forReadingFrom: file)
+                defer { try? input.close() }
+                while let data = try input.read(upToCount: 64 * 1024), !data.isEmpty { try output.write(contentsOf: data) }
+            }
             try output.write(contentsOf: Data("\n".utf8))
         }
         try output.close()

@@ -322,5 +322,8 @@
   "cleanup_reconciled": "The previous cleanup operation has ended. Checking available space; no new cleanup was started.",
   "cleanup_space_low": "Cleanup has ended, but only {0} is available. Resuming transfers requires at least {1}; waiting for more space.",
   "cleanup_space_restored": "Pixel available space has recovered to {0}. Transfers can continue.",
-  "settings_pixel_reserve_description": "Transfers and automatic cleanup share this setting. Space for pending files and concurrent transfers is reserved before sending; transfers stop if it cannot be met."
+  "settings_pixel_reserve_description": "Transfers and automatic cleanup share this setting. Space for pending files and concurrent transfers is reserved before sending; transfers stop if it cannot be met.",
+  "log_task_failure_context": "{0}: {1} · Diagnostic ID {2}",
+  "tasks_diagnostic_id": "Diagnostic ID  {0}",
+  "logs_diagnostics_notice": "Exports include task stages, resource metadata, errors and retry decisions. Diagnostic IDs link repeated attempts. Photo content is excluded; activity messages may contain filenames. Review logs before sharing."
 }

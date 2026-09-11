@@ -1,12 +1,12 @@
-PixelBridge 0.1.0-beta.13 — stop repeated failures and manage skipped tasks.
+PixelBridge 0.1.0-beta.14 — detailed diagnostics for failed transfers.
 
-- Remove an inactive task from the retry queue, or skip failed tasks matching the current filters. Skipped tasks stay in history and can be explicitly restored.
-- Preserve skipped state across restarts, automatic resume and bulk retries. Keep originals, transferred files and existing queue history.
-- Stop automatic retries for inaccessible assets, missing resources and unsupported formats. Other item-specific errors stop after five consecutive failures; environmental interruptions remain recoverable.
-- Use consistent PhotoKit fetch options for library scans, original lookup and thumbnails, including all burst members.
-- Stop a batch if recording a failure in the durable queue fails, instead of silently rediscovering the same error.
+- Correlate repeated attempts using a stable diagnostic task ID, with separate session, batch and attempt IDs.
+- Record the processing stage, scan and resource metadata, lookup results, original error codes and underlying causes, retry deadlines and skip decisions.
+- Preserve the original transfer error when recording its queue state also fails. Distinguish environmental interruptions, cancellation and completed Pixel delivery.
+- Include structured diagnostics and cleanup stage changes in log exports while keeping the activity preview concise. Both log streams share the configured retention and size limits.
+- Redact common sensitive text from exports and show the diagnostic ID in task details. Review exported logs before sharing; activity messages may still contain filenames.
 
-Known limitation: the cause of the reported inaccessible assets is still under investigation. Matching burst fetch options addresses a confirmed code inconsistency; it does not prove every affected asset was a burst member. A skipped task is neither a confirmed deletion nor a completed backup. Restore it after the underlying issue is resolved.
+To investigate a previously skipped task, update the app, restore one affected task and let it attempt again, then export logs from Settings. Earlier logs cannot recover context that was not recorded. The cause of the reported inaccessible assets remains under investigation; this release improves diagnosis and does not claim that issue is fixed.
 
 Free macOS beta for Apple Silicon, macOS 14+.
 

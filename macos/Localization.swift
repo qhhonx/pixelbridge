@@ -14,6 +14,9 @@ enum TextKey: String, CaseIterable {
     case settings_log_days
     case settings_log_size
     case unit_days
+    case log_task_failure_context
+    case tasks_diagnostic_id
+    case logs_diagnostics_notice
     case logs_recent
 
     case logs_retention

@@ -24,6 +24,7 @@ struct LibraryItem: Identifiable, Equatable {
     let date: Date
     let kind: String
     var modified: Date? = nil
+    var diagnosticSnapshot: AssetDiagnosticSnapshot? = nil
 }
 struct DeviceInfo: Identifiable {
     let id: String
@@ -35,6 +36,7 @@ struct RetryInfo: Codable {
     var next: Date
 }
 struct BridgeFailure: LocalizedError {
+    var underlying: Error? = nil
     let message: Message
     var errorDescription: String? { message.text }
 }
@@ -144,7 +146,12 @@ func processOutput(_ executable: URL, _ arguments: [String], timeout: Double = 1
                     try handle.synchronize()
                     let output = String(decoding: try Data(contentsOf: logURL), as: UTF8.self)
                     if p.terminationStatus == 0 { continuation.resume(returning: output) }
-                    else { continuation.resume(throwing: fail(output.isEmpty ? tr(.error_exit_code, String(p.terminationStatus)) : String(output.suffix(2000)).trimmingCharacters(in: .whitespacesAndNewlines))) }
+                    else {
+                        let reason = output.isEmpty ? tr(.error_exit_code, String(p.terminationStatus)) : String(output.suffix(2000)).trimmingCharacters(in: .whitespacesAndNewlines)
+                        let cause = NSError(domain: "PixelBridge.Process", code: Int(p.terminationStatus),
+                            userInfo: [NSLocalizedDescriptionKey: "Subprocess exited with status \(p.terminationStatus)"])
+                        continuation.resume(throwing: BridgeFailure(underlying: cause, message: .raw(reason)))
+                    }
                 } catch { continuation.resume(throwing: error) }
             }
         }
