@@ -345,7 +345,7 @@ private final class PhotoCell: NSCollectionViewItem {
         statusPill.toolTip = statusText
         let mediaText = mediaLabelText(item.kind)
         mediaPill.isHidden = item.kind == "photo"
-        mediaIcon.image = NSImage(systemSymbolName: item.kind == "motion" ? "livephoto" : "play.fill", accessibilityDescription: mediaText)
+        mediaIcon.image = NSImage(systemSymbolName: item.kind == "motion" ? "livephoto" : (item.kind == "burst" ? "square.stack.3d.up" : "play.fill"), accessibilityDescription: mediaText)
         mediaLabel.stringValue = mediaText; mediaLabel.isHidden = !showLabels
         mediaPill.toolTip = mediaText
         view.toolTip = item.date.formatted(.dateTime.year().month().day().hour().minute().locale(Locale(identifier: L10n.language))) + " · " + mediaText + " · " + statusText

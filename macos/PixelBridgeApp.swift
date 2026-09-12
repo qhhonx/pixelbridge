@@ -253,7 +253,7 @@ struct ContentView: View {
                 SectionHeading(title: tr(.gallery_heading), detail: model.libraryCounts.text.isEmpty ? tr(.gallery_intro) : model.libraryCounts.text)
                 Menu {
                     Picker(tr(.gallery_media_type), selection: $kindFilter) {
-                        ForEach(["all", "photo", "motion", "video"], id: \.self) { Text(mediaLabel($0)).tag($0) }
+                        ForEach(["all", "photo", "motion", "burst", "video"], id: \.self) { Text(mediaLabel($0)).tag($0) }
                     }.pickerStyle(.inline)
                 } label: {
                     Text(mediaLabel(kindFilter))
@@ -436,6 +436,11 @@ struct ContentView: View {
                     }
                 }
                 Spacer()
+                if visibleRows.contains(where: { $0.phase == "skipped" }) {
+                    Button(tr(.tasks_restore_filtered)) {
+                        Task { await model.restoreTasks(visibleRows) }
+                    }.disabled(!visibleRows.contains(where: model.canRestoreTask))
+                }
                 Button(tr(.tasks_skip_filtered_failed)) {
                     Task { await model.skipTasks(visibleRows.filter { $0.phase == "failed" }) }
                 }.disabled(!visibleRows.contains { $0.phase == "failed" && model.canSkipTask($0) })
@@ -449,7 +454,7 @@ struct ContentView: View {
                         }
                     }.frame(width: 230)
                     Picker(tr(.gallery_media_type), selection: $taskKindFilter) {
-                        ForEach(["all", "photo", "motion", "video", "unknown"], id: \.self) { kind in
+                        ForEach(["all", "photo", "motion", "burst", "video", "unknown"], id: \.self) { kind in
                             Text(kind == "unknown" ? tr(.tasks_type_unknown) : mediaLabel(kind)).tag(kind)
                         }
                     }.frame(width: 230)

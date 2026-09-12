@@ -90,6 +90,25 @@ import Foundation
         check(processed == ["first"] && model.rows.first { $0.id == "later" }?.phase == "skipped")
         print("PASS: skipping a waiting task prevents a stale batch snapshot from starting it")
 
+        try await restored.testReloadQueue()
+        let batchSkipped = restored.rows.filter { $0.phase == "skipped" }
+        let protectedCompleted = restored.rows.first { $0.id == "completed" }!
+        let pendingBefore = restored.pendingRetryIDs
+        check(batchSkipped.count >= 2)
+        await restored.restoreTasks(batchSkipped + [protectedCompleted, batchSkipped[0]])
+        check(batchSkipped.allSatisfy { old in restored.rows.first { $0.id == old.id }?.phase == "failed" })
+        check(restored.pendingRetryIDs == pendingBefore.union(batchSkipped.map(\.id)))
+        check(restored.rows.first { $0.id == "completed" }?.delivered == true)
+        // A stale bulk action must not change a task after it has been delivered.
+        for phase in ["exporting", "prepared", "transferred"] {
+            try await invoke(["queue-transition", "--asset-id", batchSkipped[0].id, "--phase", phase,
+                              "--sha256", String(repeating: "b", count: 64), "--remote", "/sdcard/restored.jpg"])
+        }
+        try await restored.testReloadQueue()
+        await restored.restoreTasks(batchSkipped)
+        check(restored.rows.first { $0.id == batchSkipped[0].id }?.delivered == true)
+        print("PASS: bulk restore deduplicates skipped tasks, queues retries, and preserves completed work even with stale selections")
+
         for key: TextKey in [.error_pixel_temperature, .error_pixel_storage, .error_photos_permission, .error_icloud_timeout] {
             check(!shouldStopAutomaticRetry(fail(Message(key)), attempts: 100))
         }

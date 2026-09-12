@@ -7,6 +7,7 @@ enum TextKey: String, CaseIterable {
     case queue_skipped
     case tasks_skip
     case tasks_restore
+    case tasks_restore_filtered
     case tasks_skip_filtered_failed
     case tasks_skip_notice
     case tasks_skipped_by_user
@@ -213,6 +214,7 @@ enum TextKey: String, CaseIterable {
     case logs_title
     case media_all
     case media_motion
+    case media_burst
     case media_photo
     case media_video
     case menu_delivered

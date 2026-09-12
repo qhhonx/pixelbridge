@@ -1,6 +1,18 @@
 import Foundation
+import Photos
 @main struct SupportTests {
     static func main() async throws {
+        precondition(libraryMediaKind(mediaType: .image, subtypes: [], burstIdentifier: nil) == "photo")
+        precondition(libraryMediaKind(mediaType: .image, subtypes: [], burstIdentifier: "") == "photo")
+        precondition(libraryMediaKind(mediaType: .image, subtypes: [], burstIdentifier: "group") == "burst")
+        precondition(libraryMediaKind(mediaType: .image, subtypes: [.photoLive], burstIdentifier: "group") == "motion")
+        precondition(libraryMediaKind(mediaType: .video, subtypes: [], burstIdentifier: nil) == "video")
+        let burstRow = QueueRow(asset_id: "burst", filename: "burst.jpg", phase: "skipped", timestamp_ms: 0, sha256: nil, remote: nil, message: nil)
+        let photoRow = QueueRow(asset_id: "photo", filename: "photo.jpg", phase: "skipped", timestamp_ms: 0, sha256: nil, remote: nil, message: nil)
+        let kinds = ["burst": "burst", "photo": "photo"]
+        precondition(filteredTasks([burstRow, photoRow], status: .skipped, kind: "burst", kinds: kinds, requested: [], activeID: nil).map(\.id) == ["burst"])
+        precondition(filteredTasks([burstRow, photoRow], status: .all, kind: "photo", kinds: kinds, requested: [], activeID: nil).map(\.id) == ["photo"])
+        print("PASS: burst classification and task filters separate burst frames from ordinary photos")
         let suite = "PixelBridge.PreferenceTests." + UUID().uuidString
         let preferences = UserDefaults(suiteName: suite)!
         defer { preferences.removePersistentDomain(forName: suite) }

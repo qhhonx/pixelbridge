@@ -288,11 +288,11 @@ final class BridgeModel: ObservableObject {
             items.reserveCapacity(assets.count)
             var gallery: [String: [LibraryItem]] = [:]
             var added = 0
-            var live = 0; var photos = 0; var videos = 0
+            var live = 0; var photos = 0; var videos = 0; var bursts = 0
             assets.enumerateObjects { asset, _, _ in
                 guard asset.mediaType == .image || asset.mediaType == .video else { return }
-                let kind = asset.mediaType == .video ? "video" : (asset.mediaSubtypes.contains(.photoLive) ? "motion" : "photo")
-                if kind == "video" { videos += 1 } else if kind == "motion" { live += 1 } else { photos += 1 }
+                let kind = libraryMediaKind(mediaType: asset.mediaType, subtypes: asset.mediaSubtypes, burstIdentifier: asset.burstIdentifier)
+                if kind == "video" { videos += 1 } else if kind == "motion" { live += 1 } else if kind == "burst" { bursts += 1 } else { photos += 1 }
                 // Avoid one Photos database round-trip per resource during a full-library scan.
                 // Names are resolved only when an asset is actually exported.
                 let date = asset.creationDate ?? .distantPast
@@ -306,7 +306,7 @@ final class BridgeModel: ObservableObject {
                 gallery["all", default: []].append(item)
                 gallery[kind, default: []].append(item)
             }
-            return (items, assets.count, Message(.library_counts, String(describing: photos.formatted()), String(describing: live.formatted()), String(describing: videos.formatted())), assets, gallery, added)
+            return (items, assets.count, Message(.library_counts, String(describing: photos.formatted()), String(describing: live.formatted()), String(describing: videos.formatted()), String(describing: bursts.formatted())), assets, gallery, added)
         }.value
         guard [.authorized, .limited].contains(PHPhotoLibrary.authorizationStatus(for: .readWrite)) else {
             authorized = false; library = []; gallery = [:]; totalAssets = 0; libraryCounts = Message(.photos_access_closed)
@@ -433,15 +433,28 @@ final class BridgeModel: ObservableObject {
             } catch { report(error); break }
         }
     }
+    func canRestoreTask(_ row: QueueRow) -> Bool {
+        row.phase == "skipped" && !taskMutationIDs.contains(row.id)
+    }
     func restoreTask(_ row: QueueRow) async {
-        guard row.phase == "skipped", !taskMutationIDs.contains(row.id) else { return }
-        taskMutationIDs.insert(row.id)
-        defer { taskMutationIDs.remove(row.id) }
-        do {
-            try await transition(row.id, "failed", message: tr(.tasks_restored))
-            retries[row.id] = nil; pendingRetryIDs.insert(row.id); saveRetries()
+        await restoreTasks([row])
+    }
+    func restoreTasks(_ selected: [QueueRow]) async {
+        let ids = Set(selected.filter(canRestoreTask).map(\.id))
+        guard !ids.isEmpty else { return }
+        taskMutationIDs.formUnion(ids)
+        defer {
+            taskMutationIDs.subtract(ids)
+            saveRetries()
             if autoRunning { nextRun = Date() }
-        } catch { report(error) }
+        }
+        for id in ids.sorted() {
+            do {
+                guard rows.first(where: { $0.id == id })?.phase == "skipped" else { continue }
+                try await transition(id, "failed", message: tr(.tasks_restored))
+                retries[id] = nil; pendingRetryIDs.insert(id)
+            } catch { report(error); break }
+        }
     }
     func taskStatus(_ row: QueueRow) -> TaskStatusFilter {
         TaskStatusFilter.status(of: row, requested: pendingRetryIDs, activeID: busy ? currentItem?.id : nil, activeIDs: activeIDs)

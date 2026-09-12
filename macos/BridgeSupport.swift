@@ -18,6 +18,13 @@ struct QueueRow: Decodable, Identifiable {
         ["discovered": tr(.queue_discovered), "exporting": tr(.queue_exporting), "prepared": tr(.queue_prepared), "transferred": tr(.metric_delivered), "backup_seen": tr(.queue_backed_up), "motion_verified": tr(.queue_motion_verified), "failed": tr(.queue_failed), "skipped": tr(.queue_skipped)][phase] ?? phase
     }
 }
+func libraryMediaKind(mediaType: PHAssetMediaType, subtypes: PHAssetMediaSubtype, burstIdentifier: String?) -> String {
+    if mediaType == .video { return "video" }
+    if subtypes.contains(.photoLive) { return "motion" }
+    if let burstIdentifier, !burstIdentifier.isEmpty { return "burst" }
+    return "photo"
+}
+
 struct LibraryItem: Identifiable, Equatable {
     let id: String
     let name: String
