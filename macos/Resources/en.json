@@ -325,5 +325,8 @@
   "settings_pixel_reserve_description": "Transfers and automatic cleanup share this setting. Space for pending files and concurrent transfers is reserved before sending; transfers stop if it cannot be met.",
   "log_task_failure_context": "{0}: {1} · Diagnostic ID {2}",
   "tasks_diagnostic_id": "Diagnostic ID  {0}",
-  "logs_diagnostics_notice": "Exports include task stages, resource metadata, errors and retry decisions. Diagnostic IDs link repeated attempts. Photo content is excluded; activity messages may contain filenames. Review logs before sharing."
+  "logs_diagnostics_notice": "Exports include task stages, resource metadata, errors and retry decisions. Diagnostic IDs link repeated attempts. Photo content is excluded; activity messages may contain filenames. Review logs before sharing.",
+  "error_burst_metadata": "Could not verify burst grouping metadata. The original photo is unchanged.",
+  "error_burst_resume_changed": "This burst would differ from its previously prepared copy. Automatic retry stopped to avoid duplicate backups; retain the existing files for inspection.",
+  "error_burst_cache_budget": "Not enough staging space to prepare a burst copy. Increase the cache limit or free disk space; the original is retained."
 }

@@ -1,6 +1,9 @@
 import Foundation
 
 enum TextKey: String, CaseIterable {
+    case error_burst_cache_budget
+    case error_burst_metadata
+    case error_burst_resume_changed
     case queue_skipped
     case tasks_skip
     case tasks_restore

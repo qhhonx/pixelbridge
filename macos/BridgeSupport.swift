@@ -311,7 +311,7 @@ func isTemporaryInterruption(_ error: Error, depth: Int = 0) -> Bool {
     if let failure = error as? BridgeFailure,
        [.error_photos_permission, .cleanup_draining, .error_pixel_temperature, .error_pixel_storage, .error_pixel_disconnected,
         .error_pixel_waiting, .error_pixel_generation, .error_cache_budget, .error_mac_storage,
-        .error_download_budget, .error_icloud_timeout, .error_timeout].contains(failure.message.key) { return true }
+        .error_download_budget, .error_burst_cache_budget, .error_icloud_timeout, .error_timeout].contains(failure.message.key) { return true }
     let ns = error as NSError
     if ns.domain == NSURLErrorDomain { return true }
     if ns.domain == NSPOSIXErrorDomain && ns.code == Int(ENOSPC) { return true }
@@ -335,7 +335,7 @@ func libraryFetchOptions() -> PHFetchOptions {
 func shouldStopAutomaticRetry(_ error: Error, attempts: Int) -> Bool {
     if isTemporaryInterruption(error) { return false }
     if let key = (error as? BridgeFailure)?.message.key,
-       [.error_asset_missing, .error_original_missing, .error_motion_missing, .error_format_unsupported].contains(key) { return true }
+       [.error_asset_missing, .error_original_missing, .error_motion_missing, .error_format_unsupported, .error_burst_resume_changed].contains(key) { return true }
     return attempts >= 5
 }
 

@@ -1,17 +1,11 @@
-PixelBridge 0.1.0-beta.14 — detailed diagnostics for failed transfers.
+PixelBridge 0.1.0-beta.15 — 连拍，留住一整组瞬间。
 
-- Correlate repeated attempts using a stable diagnostic task ID, with separate session, batch and attempt IDs.
-- Record the processing stage, scan and resource metadata, lookup results, original error codes and underlying causes, retry deadlines and skip decisions.
-- Preserve the original transfer error when recording its queue state also fails. Distinguish environmental interruptions, cancellation and completed Pixel delivery.
-- Include structured diagnostics and cleanup stage changes in log exports while keeping the activity preview concise. Both log streams share the configured retention and size limits.
-- Redact common sensitive text from exports and show the diagnostic ID in task details. Review exported logs before sharing; activity messages may still contain filenames.
+- 新增连拍支持：为传输副本保留分组和封面信息，让 Google Photos 按连拍呈现。
+- 每帧独立传输与校验，重试保留进度；Apple 原件和图像像素保持不变。
+- 中英文官网重点介绍实况照片与连拍。
 
-To investigate a previously skipped task, update the app, restore one affected task and let it attempt again, then export logs from Settings. Earlier logs cannot recover context that was not recorded. The cause of the reported inaccessible assets remains under investigation; this release improves diagnosis and does not claim that issue is fixed.
+JPEG 分组已实测，HEIC 云端效果待验证。旧备份和已有进度保持不变。
 
-Free macOS beta for Apple Silicon, macOS 14+.
+Keep burst moments together in Google Photos, alongside Live Photo support. Each frame is independently transferred and verified, with Apple originals and image pixels preserved. JPEG grouping has been tested; HEIC cloud behavior remains unverified. Existing backups and progress are retained.
 
-Download the arm64 ZIP, extract it and move PixelBridge to Applications. This release is **ad hoc signed and not notarized by Apple**. If macOS blocks a download you trust, follow [Apple's per-app opening instructions](https://support.apple.com/en-us/102445). The SHA256SUMS file is provided for download integrity checks.
-
-Includes native photo browsing, supported Live Photo conversion, incremental Pixel transfers, persistent progress, retry/pause controls, verified Mac cache cleanup, English/Chinese UI and Sparkle updates. Update archives and feeds carry a separate Ed25519 signature.
-
-Transferred to Pixel does not confirm Google Photos cloud backup. Keep your originals, verify a small batch and manage Pixel space only after cloud backup is confirmed. See README for requirements and limitations.
+Apple Silicon · macOS 14+. Use **Check for Updates** in PixelBridge or download the arm64 ZIP. Free beta, ad hoc signed and not notarized by Apple.

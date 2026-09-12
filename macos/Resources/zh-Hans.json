@@ -325,5 +325,8 @@
   "settings_pixel_reserve_description": "传输和自动清理共用这一设置。传输前同时预留待传文件与并发任务所需空间，无法满足时先停止传输。",
   "log_task_failure_context": "{0}：{1} · 诊断 ID {2}",
   "tasks_diagnostic_id": "诊断 ID  {0}",
-  "logs_diagnostics_notice": "导出包含任务阶段、资源信息、错误及重试决定，可通过诊断 ID 关联多次尝试。不包含照片内容；运行记录可能包含文件名，分享前请检查。"
+  "logs_diagnostics_notice": "导出包含任务阶段、资源信息、错误及重试决定，可通过诊断 ID 关联多次尝试。不包含照片内容；运行记录可能包含文件名，分享前请检查。",
+  "error_burst_metadata": "无法验证连拍分组信息，原照片未更改。",
+  "error_burst_resume_changed": "这张连拍与先前准备的副本不一致。为避免重复备份，已停止自动重试；请保留现有文件以便检查。",
+  "error_burst_cache_budget": "中转空间不足，无法准备连拍副本。请提高缓存上限或释放磁盘空间；原件已保留。"
 }

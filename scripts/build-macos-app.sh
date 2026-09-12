@@ -13,6 +13,8 @@ contents="$app_dir/Contents"
 rm -rf "$app_dir"
 mkdir -p "$contents/MacOS" "$contents/Resources" "$contents/Frameworks" .build-cache/swift-modules
 cp target/release/pixelbridge "$contents/MacOS/pixelbridge-core"
+# Remove linker debug records that can retain local toolchain paths.
+xcrun strip -S "$contents/MacOS/pixelbridge-core"
 ditto .build-cache/exiftool "$contents/Resources/exiftool"
 ditto .build-cache/sparkle/Sparkle.framework "$contents/Frameworks/Sparkle.framework"
 xcrun swiftc -O -whole-module-optimization -parse-as-library \
@@ -20,7 +22,7 @@ xcrun swiftc -O -whole-module-optimization -parse-as-library \
   -debug-prefix-map "$project_dir=/pixelbridge" \
   -framework SwiftUI -framework Photos -framework AppKit -framework ServiceManagement \
   -F .build-cache/sparkle -framework Sparkle -Xlinker -rpath -Xlinker @executable_path/../Frameworks \
-  macos/Localization.swift macos/BridgeSupport.swift macos/ActivityLog.swift macos/Diagnostics.swift macos/PixelCleanup.swift macos/BridgeModel.swift \
+  macos/Localization.swift macos/BridgeSupport.swift macos/ActivityLog.swift macos/Diagnostics.swift macos/BurstPhoto.swift macos/PixelCleanup.swift macos/BridgeModel.swift \
   macos/PhotoGrid.swift macos/AppUpdater.swift macos/PixelBridgeApp.swift \
   -o "$contents/MacOS/PixelBridge"
 cp macos/Resources/*.json "$contents/Resources/"

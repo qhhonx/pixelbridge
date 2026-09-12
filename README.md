@@ -14,6 +14,7 @@ The app uses an ad hoc integrity signature and is **not notarized by Apple**.
 - Reads your System Photo Library with PhotoKit, including originals stored in iCloud when Optimize Mac Storage is enabled.
 - Shows a paginated native photo grid, with photo-type and transfer-status icons.
 - Packages supported Live Photos as motion photos, retaining the still image and paired video together.
+- Adds Google burst grouping metadata and the Apple representative-frame flag to separate JPEG/HEIC transfer copies. JPEG grouping has been verified on Pixel and Google Photos web; HEIC cloud grouping remains unverified.
 - Transfers files through USB/ADB with hashes, resumable progress, retry backoff and temperature/storage guards.
 - Stores progress in a local SQLite queue and can reclaim verified Mac staging files.
 - Offers English and Simplified Chinese, following your system language by default.
@@ -37,7 +38,7 @@ Keep the Mac awake, the Pixel connected, and both devices online during transfer
 
 Mac staging cleanup only removes eligible files after durable progress is saved and the corresponding Pixel file passes another hash check. It does not delete Apple Photos originals, Pixel files or backup progress. Free Pixel storage through Google Photos only after confirming cloud backup.
 
-The app transfers **unmodified originals**. Album organization, edits, deleted-item mirroring, and every Apple media format are not reproduced. Library identifiers can differ between Macs; moving to a different photo library can cause re-transfers. Google storage benefits are device/account dependent and subject to [Google's policy](https://support.google.com/pixelphone/answer/6220791). Large-library unattended operation remains a beta limitation.
+The app reads **unmodified originals**. Supported burst photos receive grouping metadata on separate transfer copies without re-encoding their image pixels; Apple originals remain untouched. Album organization, edits, deleted-item mirroring, and every Apple media format are not reproduced. Library identifiers can differ between Macs; moving to a different photo library can cause re-transfers. Google storage benefits are device/account dependent and subject to [Google's policy](https://support.google.com/pixelphone/answer/6220791). Large-library unattended operation remains a beta limitation.
 
 ## Updates
 
@@ -86,3 +87,7 @@ PixelBridge operates Google Photos’ **Free up space on this device**, requirin
 The adapter currently targets Android 10 on original Pixel/Pixel XL. Google Photos is **not pinned to a version**: compatibility depends on recognizing the account, device-cleanup entry, safety text and action controls. Unknown or ambiguous pages stop instead of guessing, even on a previously checked version. Chinese navigation was tested on-device with Google Photos 7.91.0.973540846; English selectors and alternate version numbers have fixture coverage, not device validation. This does not guarantee every Google Photos release or language. Existing opt-in and account bindings survive updates; use **Check again** to repeat the non-destructive probe. A secure lock must be unlocked manually. An active app other than Photos or the launcher delays cleanup. UI inspection failures never reuse an older XML dump.
 
 Use a dedicated backup phone: Google Photos may also clean eligible backed-up files outside PixelBridge’s folder. Google decides eligibility and may retain recent photos. The feature does not independently prove every cloud item or motion track is available. Pause cancels PixelBridge, but an operation already accepted by Google Photos can continue; uncertain completion is saved and checked before further transfers. A 10-minute interval starts immediately before pressing the cleanup action. Failed preflight checks do not start this interval; they retry through the normal backup scheduler. The overview and log distinguish temperature, ongoing cloud uploads, foreground app, cooldown, pending completion and insufficient recovered space.
+
+## Live Photos and bursts
+
+Supported Live Photos become motion photos; burst copies keep grouping and representative-frame information for Google Photos. Every burst frame is transferred and verified individually. Apple originals stay untouched. JPEG grouping has been verified on Pixel and Google Photos web; HEIC cloud behavior remains unverified.

@@ -20,6 +20,7 @@ export default function Home() {
   [t('faq_pixel_question'), <>{t('faq_pixel_answer')}<a href="https://support.google.com/pixelphone/answer/6220791?hl=zh-Hans" target="_blank" rel="noreferrer">{t('faq_pixel_link')}</a></>],
   [t('faq_icloud_question'), t('faq_icloud_answer')],
   [t('faq_motion_question'), t('faq_motion_answer')],
+  [t('faq_burst_question'), t('faq_burst_answer')],
   [t('faq_cleanup_question'), t('faq_cleanup_answer')],
   [t('faq_dedup_question'), t('faq_dedup_answer')],
   [t('faq_overnight_question'), t('faq_overnight_answer')],
@@ -39,6 +40,7 @@ export default function Home() {
         <p className="hero-copy">{t('hero_description_first')}<br className="desktop-break" />{t('hero_description_second')}</p>
         <div className="hero-actions"><a className="button primary" href="#download"><Download size={19} /> {t(publicReleasesEnabled ? 'hero_download' : 'nav_beta_status')}</a><a className="text-link" href="#how">{t('hero_how')}<ArrowRight size={18} /></a></div>
         <p className="compatibility">{t('hero_compatibility')}</p>
+        <p className="media-highlights">{t('hero_media')}</p>
         <figure className="app-figure">
           <div className="app-window">
             <aside className="app-sidebar"><div className="traffic" aria-hidden="true"><i /><i /><i /></div><div className="app-mini-brand"><Image unoptimized src="/assets/pixelbridge.png" width="26" height="26" alt="" /> PixelBridge</div><span className="sidebar-caption">{t('sidebar_photos')}</span><span className="sidebar-item selected"><Images size={16} /> {t('nav_library')}</span><span className="sidebar-item"><Layers3 size={16} /> {t('nav_overview')}</span><span className="sidebar-item"><RefreshCw size={16} /> {t('nav_tasks')}</span><span className="sidebar-caption management">{t('sidebar_management')}</span><span className="sidebar-item"><Smartphone size={16} /> {t('nav_device')}</span><span className="sidebar-item"><Settings2 size={16} /> {t('nav_settings')}</span><span className="sidebar-bottom"><span className="status-dot" /> {t('status_automatic')}</span></aside>
@@ -51,7 +53,7 @@ export default function Home() {
       <div className="trust-strip wrap"><span><Monitor /> {t('trust_native')}</span><span><RefreshCw /> {t('trust_incremental')}</span><span><ShieldCheck /> {t('trust_verification')}</span><span><HardDrive /> {t('trust_cleanup')}</span></div>
 
       <section className="section wrap" id="features"><div className="section-heading"><p className="kicker">{t('features_kicker')}</p><h2>{t('features_title_first')}<br />{t('features_title_second')}</h2><p>{t('features_description_first')}<br />{t('features_description_second')}</p></div>
-        <div className="feature-grid"><article><span className="feature-icon"><Images /></span><h3>{t('feature_habits_title')}</h3><p>{t('feature_habits_description')}</p><span className="feature-note">{t('feature_habits_note')}</span></article><article><span className="feature-icon"><Layers3 /></span><h3>{t('feature_motion_title')}</h3><p>{t('feature_motion_description')}</p><span className="feature-note">{t('feature_motion_note')}</span></article><article><span className="feature-icon"><RefreshCw /></span><h3>{t('feature_resume_title')}</h3><p>{t('feature_resume_description')}</p><span className="feature-note">{t('feature_resume_note')}</span></article></div>
+        <div className="feature-grid"><article><span className="feature-icon"><Layers3 /></span><h3>{t('feature_motion_title')}</h3><p>{t('feature_motion_description')}</p><span className="feature-note">{t('feature_motion_note')}</span></article><article><span className="feature-icon"><Images /></span><h3>{t('feature_burst_title')}</h3><p>{t('feature_burst_description')}</p><span className="feature-note">{t('feature_burst_note')}</span></article><article><span className="feature-icon"><Cloud /></span><h3>{t('feature_habits_title')}</h3><p>{t('feature_habits_description')}</p><span className="feature-note">{t('feature_habits_note')}</span></article><article><span className="feature-icon"><RefreshCw /></span><h3>{t('feature_resume_title')}</h3><p>{t('feature_resume_description')}</p><span className="feature-note">{t('feature_resume_note')}</span></article></div>
       </section>
 
       <section className="flow-section" id="how"><div className="wrap"><div className="section-heading compact"><p className="kicker">{t('flow_kicker')}</p><h2>{t('flow_title')}</h2><p>{t('flow_description')}</p></div><div className="flow-grid">

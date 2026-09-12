@@ -55,3 +55,14 @@ Attempt records distinguish started, prepared, completed, failed, deferred and c
 NSError domain/code and the underlying chain (up to three nested causes) are retained without serializing arbitrary userInfo. Friendly mapped device errors keep their original cause; subprocess failures include the exit status under `PixelBridge.Process`. Queue-write failures are recorded separately from the original item failure. Cleanup stage changes and failures carry semantic stage/error keys without recording UI XML, account labels or every percentage poll. Successful Pixel delivery explicitly records that Google cloud backup is not verified.
 
 Diagnostics cannot recover context from older logs. To investigate a previously skipped asset, explicitly restore that task, reproduce once, then export logs. No change to the retry policy, Photos originals or cleanup authorization is implied by diagnostic collection.
+
+
+## Burst transfer copies
+
+PhotoKit burst identifiers are mapped to a deterministic SHA-256 group reference with a versioned namespace. Supported JPEG/HEIC stills receive `XMP-GCamera:BurstID` and `BurstPrimary` on an independent staging copy. `representsBurst` selects the Apple representative frame. Each frame retains its own stable queue identity and destination filename. No raw PhotoKit group identifier is exported. Live Photo preparation is unchanged.
+
+Preparation keeps the original cache bytes intact, budgets the copy and ExifTool's temporary rewrite, verifies the written tags, and only then hashes and publishes the delivery copy. Errors and cancellation leave the original and previous delivery intact. Diagnostics record the pseudonymous group reference, primary flag and preparation/resume decision.
+
+Previously prepared copies retain their recorded hash, including legacy unannotated originals and failed transfers with durable preparation proofs. A reconstruction that changes that proof stops automatic retry instead of silently replacing a possibly uploaded cloud item. Completed jobs remain excluded. This release does not automatically repair historical cloud photos; rewriting local metadata is not a guaranteed in-place cloud edit and may produce duplicates on re-upload. A mixed old/new burst can therefore need a separately reviewed migration.
+
+Synthetic JPEG/HEIC tests verify tag round trips, source-byte and decoded-pixel preservation, hard-link separation, deterministic rebuilds, legacy resumes, copy budgets, cancellation and rejected proof changes. On-device synthetic JPEG validation confirmed native burst grouping before cloud backup and a three-frame burst on Google Photos web after all frames were separately uploaded. This is observed compatibility, not a published Google import contract; HEIC cloud behavior still needs device validation.

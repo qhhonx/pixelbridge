@@ -904,9 +904,21 @@ final class BridgeModel: ObservableObject {
         try ensureDirectory(jobDir)
         let source = jobDir.appendingPathComponent("original." + ext)
         let outputName = "PB_" + stableID(item.id) + (live ? "_MP." : ".") + ext
-        let prepared = live ? jobDir.appendingPathComponent(outputName) : source
+        let burst = live ? nil : BurstPhotoMetadata(asset)
+        if let burst {
+            guard BurstPhotoMetadata.supports(ext) else { throw fail(Message(.error_format_unsupported, ext)) }
+            diagnosticContext(item.id, burst.fields)
+        }
+        let outputFile = jobDir.appendingPathComponent(outputName)
+        var prepared = (live || burst != nil) ? outputFile : source
         var hash = prior?.sha256
-        let canResumePrepared = prior?.phase == "prepared" && FileManager.default.fileExists(atPath: prepared.path) && hash != nil
+        if burst != nil, let resumed = try await resumableBurstPhoto(source: source, delivery: outputFile,
+            expectedHash: hash, hash: { try await self.hashFile($0) }) {
+            prepared = resumed
+            diagnosticContext(item.id, ["burst_copy": resumed == source ? "legacy_original_preserved" : "prepared_copy_preserved"])
+        }
+        let canResumePrepared = (prior?.phase == "prepared" || (burst != nil && prior?.phase == "failed"))
+            && FileManager.default.fileExists(atPath: prepared.path) && hash != nil
         diagnosticContext(item.id, ["resume_prepared": String(canResumePrepared)])
         if canResumePrepared {
             diagnosticContext(item.id, ["operation": "cache_verification"])
@@ -915,6 +927,10 @@ final class BridgeModel: ObservableObject {
                 let quarantined = staging.appendingPathComponent(stableID(item.id) + ".corrupt-" + UUID().uuidString)
                 try FileManager.default.moveItem(at: jobDir, to: quarantined)
                 throw fail(Message(.error_cache_corrupt))
+            }
+            if prior?.phase == "failed" {
+                try await transition(item.id, "exporting")
+                try await transition(item.id, "prepared", hash: hash)
             }
         } else {
             diagnosticContext(item.id, ["operation": "queue_exporting"])
@@ -942,6 +958,14 @@ final class BridgeModel: ObservableObject {
                 updateStage(item.id, .preparing)
                 let text = try await invoke(["prepare", "--image", source.path, "--video", movie.path, "--output", prepared.path, "--exiftool", exiftool.path, "--force"])
                 hash = value("sha256", text)
+            } else if let burst {
+                diagnosticContext(item.id, ["operation": "burst_metadata"])
+                updateStage(item.id, .preparing)
+                hash = try await prepareBurstPhoto(source: source, delivery: outputFile, metadata: burst,
+                    exiftool: exiftool, budget: await availableBudget(), expectedHash: prior?.sha256,
+                    hash: { try await self.hashFile($0) })
+                prepared = outputFile
+                diagnosticContext(item.id, ["burst_copy": "metadata_verified"])
             } else {
                 diagnosticContext(item.id, ["operation": "file_hash"])
                 hash = try await hashFile(prepared)
@@ -954,12 +978,12 @@ final class BridgeModel: ObservableObject {
         guard let hash else { throw fail(Message(.error_hash_missing)) }
         let size = Int64((try prepared.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0)
         // Destination uses the stable Photos identity, not a reusable camera filename.
-        let delivery = live ? prepared : jobDir.appendingPathComponent(outputName)
-        if !live {
+        let delivery = outputFile
+        if prepared != delivery {
             if FileManager.default.fileExists(atPath: delivery.path), try await hashFile(delivery) != hash {
                 try FileManager.default.moveItem(at: delivery, to: delivery.appendingPathExtension("corrupt-" + UUID().uuidString))
             }
-            if !FileManager.default.fileExists(atPath: delivery.path) { try FileManager.default.linkItem(at: source, to: delivery) }
+            if !FileManager.default.fileExists(atPath: delivery.path) { try FileManager.default.linkItem(at: prepared, to: delivery) }
         }
         diagnosticContext(item.id, ["operation": "queue_size"])
         let output = try await invoke(["queue-set-size", "--state-dir", state.path, "--asset-id", item.id, "--bytes", String(size)])
