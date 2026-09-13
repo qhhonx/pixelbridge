@@ -1,4 +1,7 @@
 {
+  "error_item_stalled": "这张照片处理长时间没有进展，已延后重试，继续备份其他照片。",
+  "error_restart_required": "照片处理没有响应取消。请重启 PixelBridge；已完成的进度会保留，卡住的任务稍后再试。",
+  "error_resume_changed": "重新生成的文件与原有传输校验不一致，已停止重试以保留原进度。",
   "queue_skipped": "已跳过",
   "tasks_skip": "移出重试队列",
   "tasks_restore_filtered": "恢复当前筛选的已跳过任务",

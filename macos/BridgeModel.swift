@@ -46,7 +46,7 @@ final class BridgeModel: ObservableObject {
     @Published private(set) var pixelCleanupEnabled = UserDefaults.standard.bool(forKey: "pixelCleanupEnabled")
     @Published private(set) var cleanupMessage = Message(.cleanup_disabled)
     @Published private(set) var cleanupProgress: CleanupProgress?
-    var activityDescription: String { cleanupProgress?.message.text ?? (currentName.isEmpty ? detail.text : currentName) }
+    var activityDescription: String { detail.key == .error_restart_required ? detail.text : (cleanupProgress?.message.text ?? (currentName.isEmpty ? detail.text : currentName)) }
     private var cleanupBinding = UserDefaults.standard.dictionary(forKey: "pixelCleanupBinding") as? [String: String] ?? [:]
     private var cleanupPendingDevice = UserDefaults.standard.string(forKey: "pixelCleanupPendingDevice") ?? ""
     private var cleanupTransferBytes = (UserDefaults.standard.object(forKey: "pixelCleanupTransferBytes") as? NSNumber)?.int64Value ?? 0
@@ -63,12 +63,22 @@ final class BridgeModel: ObservableObject {
     private let activityLogger: ActivityLogger
     private let diagnosticSessionID = UUID().uuidString
     private var diagnosticBatchID: String?
+    private var transferWatchdogs: [String: TransferWatchdog] = [:]
     private var diagnosticContexts: [String: [String: String]] = [:]
     #if PIXELBRIDGE_TESTING
+    var testStallTimeout: Double = 900
+    var testStallGrace: Double = 30
     var testDiagnostic: ((DiagnosticRecord) -> Void)?
     #endif
     private func diagnosticContext(_ id: String, _ fields: [String: String]) {
+        let previous = diagnosticContexts[id]?["operation"]
         diagnosticContexts[id, default: [:]].merge(fields, uniquingKeysWith: { _, latest in latest })
+        if let operation = fields["operation"], previous != operation, let active = activeTransfers[id] {
+            transferWatchdogs[id]?.progress(operation: operation)
+            activityLogger.diagnostic(DiagnosticRecord(event: "operation_started", sessionID: diagnosticSessionID,
+                batchID: diagnosticBatchID, attemptID: active.attemptID.uuidString, assetID: id,
+                fields: ["operation": operation, "elapsed_ms": String(Int(Date().timeIntervalSince(active.started) * 1000))])) { _ in }
+        }
     }
     private func diagnostic(_ event: String, item: LibraryItem? = nil, error: Error? = nil, fields: [String: String] = [:]) {
         var values = ["app_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "development",
@@ -222,11 +232,12 @@ final class BridgeModel: ObservableObject {
                 retries = (try? JSONDecoder().decode([String: RetryInfo].self, from: data)) ?? [:]
             }
             try await refreshQueue()
+            try await recoverStalledTransfers()
             authorized = [.authorized, .limited].contains(PHPhotoLibrary.authorizationStatus(for: .readWrite))
             detectADB()
             await refreshDevice()
             if authorized { observeLibrary(); await scan() }
-            if autoRunning { enqueueFailedTasks(); nextRun = Date() }
+            if autoRunning { nextRun = Date() }
             timer = Task { [weak self] in
                 while !Task.isCancelled {
                     do { try await Task.sleep(nanoseconds: 2_000_000_000) } catch { return }
@@ -244,6 +255,64 @@ final class BridgeModel: ObservableObject {
                 }
             }
         } catch { report(error) }
+    }
+    private var stalledDirectory: URL { state.appendingPathComponent("Stalled") }
+    func recoverStalledTransfers() async throws {
+        let directory = stalledDirectory
+        for url in (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? [] where url.pathExtension == "json" {
+            let recovery = try JSONDecoder().decode(StalledTransferRecovery.self, from: Data(contentsOf: url))
+            if !rows.contains(where: { $0.id == recovery.assetID && $0.delivered }) {
+                if !rows.contains(where: { $0.id == recovery.assetID }) {
+                    _ = try await invoke(["queue-add", "--state-dir", state.path, "--asset-id", recovery.assetID, "--filename", recovery.filename])
+                }
+                // A user may have skipped the task before restarting.
+                if rows.first(where: { $0.id == recovery.assetID })?.phase != "skipped" {
+                    var retry = nextRetry(previous: retries[recovery.assetID], now: Date())
+                    retry.next = max(retry.next, Date().addingTimeInterval(300))
+                    let stopped = shouldStopAutomaticRetry(fail(Message(.error_item_stalled)), attempts: retry.attempts)
+                    try await transition(recovery.assetID, stopped ? "skipped" : "failed", message: tr(.error_item_stalled))
+                    retries[recovery.assetID] = stopped ? nil : retry
+                    try JSONEncoder().encode(retries).write(to: state.appendingPathComponent("retry.json"), options: .atomic)
+                    diagnostic("stalled_task_recovered", fields: ["previous_operation": recovery.operation, "decision": stopped ? "skip" : "retry_later"])
+                }
+            }
+            try FileManager.default.removeItem(at: url)
+        }
+    }
+    private func makeTransferWatchdog(_ item: LibraryItem) -> TransferWatchdog {
+        let active = activeTransfers[item.id]!
+        let session = diagnosticSessionID, batch = diagnosticBatchID, logger = activityLogger
+        let directory = stalledDirectory
+        let timeout: Double, grace: Double
+        #if PIXELBRIDGE_TESTING
+        timeout = testStallTimeout; grace = testStallGrace
+        #else
+        timeout = 900; grace = 30
+        #endif
+        let watcher = TransferWatchdog(idleLimit: timeout, grace: grace, onTimeout: { snapshot in
+            logger.diagnostic(DiagnosticRecord(event: "attempt_stalled", sessionID: session, batchID: batch,
+                attemptID: active.attemptID.uuidString, assetID: item.id,
+                fields: ["operation": snapshot.operation, "idle_seconds": String(snapshot.idleSeconds), "decision": "cancel_then_retry_later"])) { _ in }
+        }, onUnresponsive: { [weak self] snapshot in
+            let recovery = StalledTransferRecovery(assetID: item.id, filename: active.filename,
+                attemptID: active.attemptID.uuidString, operation: snapshot.operation, timestamp: Date())
+            do {
+                try ensureDirectory(directory)
+                try JSONEncoder().encode(recovery).write(to: directory.appendingPathComponent(stableID(item.id) + ".json"), options: .atomic)
+            } catch {
+                logger.diagnostic(DiagnosticRecord(event: "stall_recovery_write_failed", sessionID: session, assetID: item.id, error: error)) { _ in }
+            }
+            logger.diagnostic(DiagnosticRecord(event: "cancellation_unresponsive", sessionID: session, batchID: batch,
+                attemptID: active.attemptID.uuidString, assetID: item.id,
+                fields: ["operation": snapshot.operation, "idle_seconds": String(snapshot.idleSeconds), "decision": "restart_required"])) { _ in }
+            Task { @MainActor in
+                guard let self, self.activeTransfers[item.id]?.attemptID == active.attemptID else { return }
+                self.status = Message(.status_attention); self.detail = Message(.error_restart_required)
+                self.log(tr(.error_restart_required))
+            }
+        })
+        watcher.progress(operation: diagnosticContexts[item.id]?["operation"])
+        return watcher
     }
     func requestPhotos() async {
         NSApp.activate(ignoringOtherApps: true)
@@ -583,28 +652,39 @@ final class BridgeModel: ObservableObject {
         updateFocus()
         pendingRetryIDs.remove(item.id)
         defer {
+            transferWatchdogs.removeValue(forKey: item.id)?.stop()
+            try? FileManager.default.removeItem(at: stalledDirectory.appendingPathComponent(stableID(item.id) + ".json"))
             diagnosticContexts[item.id] = nil
             activeTransfers[item.id] = nil
             pixelReservations[item.id] = nil
             updateFocus()
         }
+        let watchdog = makeTransferWatchdog(item)
+        transferWatchdogs[item.id] = watchdog
         do {
-            #if PIXELBRIDGE_TESTING
-            if let testProcessItem {
-                try await guardDevice()
-                try await testProcessItem(item, prior)
-            } else {
-                try await process(item, prior: prior)
+            try await watchedTransfer(watchdog: watchdog) {
+                #if PIXELBRIDGE_TESTING
+                if let testProcessItem = self.testProcessItem {
+                    try await self.guardDevice()
+                    try await testProcessItem(item, prior)
+                } else { try await self.process(item, prior: prior) }
+                #else
+                try await self.process(item, prior: prior)
+                #endif
             }
-            #else
-            try await process(item, prior: prior)
-            #endif
             diagnostic("attempt_completed", item: item, fields: ["decision": "delivered_to_pixel", "cloud_backup": "not_verified"])
             retries[item.id] = nil; completed += 1
             saveRetries()
             log(tr(.log_delivered, activeTransfers[item.id]?.filename ?? item.name))
             return true
         } catch {
+            // Cancellation after a verified queue commit must not undo delivery.
+            if rows.contains(where: { $0.id == item.id && $0.delivered }) {
+                retries[item.id] = nil; completed += 1; saveRetries()
+                diagnostic("attempt_completed", item: item, fields: ["decision": "verified_before_cancellation", "cloud_backup": "not_verified"])
+                if Task.isCancelled { throw CancellationError() }
+                return true
+            }
             if Task.isCancelled || error is CancellationError {
                 diagnostic("attempt_cancelled", item: item, error: error, fields: ["decision": "cancelled"])
                 throw CancellationError()
@@ -615,7 +695,10 @@ final class BridgeModel: ObservableObject {
                 retries[item.id] = nil; saveRetries()
                 throw error
             }
-            let retry = nextRetry(previous: retries[item.id], now: Date())
+            var retry = nextRetry(previous: retries[item.id], now: Date())
+            if [.error_item_stalled, .error_icloud_timeout].contains((error as? BridgeFailure)?.message.key) {
+                retry.next = max(retry.next, Date().addingTimeInterval(300))
+            }
             let stopped = shouldStopAutomaticRetry(error, attempts: retry.attempts)
             let name = activeTransfers[item.id]?.filename ?? item.name
             let reason = stopped ? tr(.tasks_stopped_reason, error.localizedDescription) : error.localizedDescription
@@ -930,7 +1013,7 @@ final class BridgeModel: ObservableObject {
             prepared = resumed
             diagnosticContext(item.id, ["burst_copy": resumed == source ? "legacy_original_preserved" : "prepared_copy_preserved"])
         }
-        let canResumePrepared = (prior?.phase == "prepared" || (burst != nil && prior?.phase == "failed"))
+        let canResumePrepared = (prior?.phase == "prepared" || prior?.phase == "failed")
             && FileManager.default.fileExists(atPath: prepared.path) && hash != nil
         diagnosticContext(item.id, ["resume_prepared": String(canResumePrepared)])
         if canResumePrepared {
@@ -984,6 +1067,7 @@ final class BridgeModel: ObservableObject {
                 hash = try await hashFile(prepared)
             }
             guard let hash else { throw fail(Message(.error_hash_unavailable)) }
+            if let expected = prior?.sha256, expected != hash { throw fail(Message(.error_resume_changed)) }
             diagnosticContext(item.id, ["operation": "queue_prepared"])
             try await transition(item.id, "prepared", hash: hash)
         }

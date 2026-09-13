@@ -169,6 +169,9 @@ enum TextKey: String, CaseIterable {
     case error_hash_failed
     case error_hash_missing
     case error_hash_unavailable
+    case error_item_stalled
+    case error_restart_required
+    case error_resume_changed
     case error_icloud_timeout
     case error_lock_acquire
     case error_lock_create

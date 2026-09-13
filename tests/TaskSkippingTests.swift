@@ -109,7 +109,7 @@ import Foundation
         check(restored.rows.first { $0.id == batchSkipped[0].id }?.delivered == true)
         print("PASS: bulk restore deduplicates skipped tasks, queues retries, and preserves completed work even with stale selections")
 
-        for key: TextKey in [.error_pixel_temperature, .error_pixel_storage, .error_photos_permission, .error_icloud_timeout] {
+        for key: TextKey in [.error_pixel_temperature, .error_pixel_storage, .error_photos_permission] {
             check(!shouldStopAutomaticRetry(fail(Message(key)), attempts: 100))
         }
         check(!shouldStopAutomaticRetry(fail("conversion"), attempts: 4))

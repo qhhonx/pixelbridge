@@ -36,7 +36,7 @@ import Foundation
         print("PASS: retry priority, cooldown, four-batch draining, completed deduplication and honest per-photo statuses")
 
         for key: TextKey in [.error_pixel_temperature, .error_pixel_storage, .error_cache_budget,
-                             .error_mac_storage, .error_download_budget, .error_pixel_disconnected, .error_icloud_timeout] {
+                             .error_mac_storage, .error_download_budget, .error_pixel_disconnected] {
             precondition(isTemporaryInterruption(fail(Message(key))))
         }
         let network = NSError(domain: NSURLErrorDomain, code: NSURLErrorNotConnectedToInternet)

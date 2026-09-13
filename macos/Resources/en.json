@@ -1,4 +1,7 @@
 {
+  "error_item_stalled": "This photo stopped making progress. Its retry has been deferred so other photos can continue.",
+  "error_restart_required": "Photo processing did not respond to cancellation. Restart PixelBridge; completed progress is preserved and the stalled task will retry later.",
+  "error_resume_changed": "The regenerated file differs from the recorded transfer. Retry stopped to preserve existing progress.",
   "queue_skipped": "Skipped",
   "tasks_skip": "Remove from retry queue",
   "tasks_restore_filtered": "Restore skipped tasks in this view",

@@ -105,6 +105,7 @@ private func terminateProcessTree(_ process: Process) {
 
 func processOutput(_ executable: URL, _ arguments: [String], timeout: Double = 1800, onProgress: (@Sendable (String) -> Void)? = nil) async throws -> String {
     let cancellation = CancellationFlag()
+    let activity = TransferActivity.watchdog
     return try await withTaskCancellationHandler {
         try Task.checkCancellation()
         return try await withCheckedThrowingContinuation { continuation in
@@ -123,12 +124,13 @@ func processOutput(_ executable: URL, _ arguments: [String], timeout: Double = 1
                     environment["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
                     p.environment = environment
                     try p.run()
-                    let progressReader = onProgress == nil ? nil : try FileHandle(forReadingFrom: logURL)
+                    let progressReader = onProgress == nil && activity == nil ? nil : try FileHandle(forReadingFrom: logURL)
                     defer { try? progressReader?.close() }
                     var progressBuffer = ""
                     var lastProgressRead = Date.distantPast
                     func reportProgress() {
                         guard let progressReader, let data = try? progressReader.readToEnd(), !data.isEmpty else { return }
+                        activity?.progress()
                         progressBuffer += String(decoding: data, as: UTF8.self)
                         while let end = progressBuffer.firstIndex(of: "\n") {
                             let line = String(progressBuffer[..<end])
@@ -191,7 +193,7 @@ final class ResourceSink: @unchecked Sendable {
         } catch { failure = error; lock.unlock(); abort(error) }
     }
     func register(_ id: PHAssetResourceDataRequestID) {
-        lock.lock(); request = id; let cancel = finished; lock.unlock()
+        lock.lock(); request = id; let cancel = finished && failure != nil; lock.unlock()
         if cancel { PHAssetResourceManager.default().cancelDataRequest(id) }
     }
     func observeCompletion(_ callback: @escaping (Error?) -> Void) {
@@ -221,8 +223,9 @@ func exportOriginal(_ resource: PHAssetResource, to destination: URL, budget: In
     let partial = destination.appendingPathExtension("partial")
     let sink = try ResourceSink(partial, budget: budget)
     let options = PHAssetResourceRequestOptions(); options.isNetworkAccessAllowed = true
+    let activity = TransferActivity.watchdog
     let deadline = DispatchWorkItem { sink.abort(fail(Message(.error_icloud_timeout))) }
-    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 900, execute: deadline)
+    if activity == nil { DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 900, execute: deadline) }
     defer { deadline.cancel() }
     do {
         try await withTaskCancellationHandler {
@@ -232,7 +235,7 @@ func exportOriginal(_ resource: PHAssetResource, to destination: URL, budget: In
                 }
                 if Task.isCancelled { sink.abort(CancellationError()); return }
                 let id = PHAssetResourceManager.default().requestData(for: resource, options: options,
-                    dataReceivedHandler: { sink.receive($0) }, completionHandler: { sink.finish($0) })
+                    dataReceivedHandler: { if !$0.isEmpty { activity?.progress() }; sink.receive($0) }, completionHandler: { sink.finish($0) })
                 sink.register(id)
             }
         } onCancel: { sink.abort(CancellationError()) }
@@ -318,7 +321,7 @@ func isTemporaryInterruption(_ error: Error, depth: Int = 0) -> Bool {
     if let failure = error as? BridgeFailure,
        [.error_photos_permission, .cleanup_draining, .error_pixel_temperature, .error_pixel_storage, .error_pixel_disconnected,
         .error_pixel_waiting, .error_pixel_generation, .error_cache_budget, .error_mac_storage,
-        .error_download_budget, .error_burst_cache_budget, .error_icloud_timeout, .error_timeout].contains(failure.message.key) { return true }
+        .error_download_budget, .error_burst_cache_budget, .error_timeout].contains(failure.message.key) { return true }
     let ns = error as NSError
     if ns.domain == NSURLErrorDomain { return true }
     if ns.domain == NSPOSIXErrorDomain && ns.code == Int(ENOSPC) { return true }
@@ -342,7 +345,7 @@ func libraryFetchOptions() -> PHFetchOptions {
 func shouldStopAutomaticRetry(_ error: Error, attempts: Int) -> Bool {
     if isTemporaryInterruption(error) { return false }
     if let key = (error as? BridgeFailure)?.message.key,
-       [.error_asset_missing, .error_original_missing, .error_motion_missing, .error_format_unsupported, .error_burst_resume_changed].contains(key) { return true }
+       [.error_asset_missing, .error_original_missing, .error_motion_missing, .error_format_unsupported, .error_burst_resume_changed, .error_resume_changed].contains(key) { return true }
     return attempts >= 5
 }
 
@@ -434,7 +437,10 @@ struct ActiveTransfer {
     private var occupied = false
     private var waiters: [(UUID, CheckedContinuation<Void, Error>)] = []
     func withPermit<T>(_ operation: () async throws -> T) async throws -> T {
-        try await acquire()
+        TransferActivity.watchdog?.waitingForPreparation(true)
+        do { try await acquire() }
+        catch { TransferActivity.watchdog?.waitingForPreparation(false); throw error }
+        TransferActivity.watchdog?.waitingForPreparation(false)
         defer { release() }
         try Task.checkCancellation()
         return try await operation()
