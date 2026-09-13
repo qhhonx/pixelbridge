@@ -63,6 +63,10 @@ final class BridgeModel: ObservableObject {
     private let activityLogger: ActivityLogger
     private let diagnosticSessionID = UUID().uuidString
     private var diagnosticBatchID: String?
+    @Published var restartWhenStalled = UserDefaults.standard.bool(forKey: "restartWhenStalled") {
+        didSet { UserDefaults.standard.set(restartWhenStalled, forKey: "restartWhenStalled") }
+    }
+    private lazy var stallRestartPolicy = StallRestartPolicy(state: state)
     private var transferWatchdogs: [String: TransferWatchdog] = [:]
     private var diagnosticContexts: [String: [String: String]] = [:]
     #if PIXELBRIDGE_TESTING
@@ -283,34 +287,48 @@ final class BridgeModel: ObservableObject {
         let active = activeTransfers[item.id]!
         let session = diagnosticSessionID, batch = diagnosticBatchID, logger = activityLogger
         let directory = stalledDirectory
+        let ticket = StalledTransferTicket(directory: directory, attemptID: active.attemptID)
+        let policy = stallRestartPolicy, app = Bundle.main.bundleURL
         let timeout: Double, grace: Double
         #if PIXELBRIDGE_TESTING
         timeout = testStallTimeout; grace = testStallGrace
         #else
         timeout = 900; grace = 30
         #endif
-        let watcher = TransferWatchdog(idleLimit: timeout, grace: grace, onTimeout: { snapshot in
-            logger.diagnostic(DiagnosticRecord(event: "attempt_stalled", sessionID: session, batchID: batch,
-                attemptID: active.attemptID.uuidString, assetID: item.id,
-                fields: ["operation": snapshot.operation, "idle_seconds": String(snapshot.idleSeconds), "decision": "cancel_then_retry_later"])) { _ in }
-        }, onUnresponsive: { [weak self] snapshot in
-            let recovery = StalledTransferRecovery(assetID: item.id, filename: active.filename,
-                attemptID: active.attemptID.uuidString, operation: snapshot.operation, timestamp: Date())
-            do {
-                try ensureDirectory(directory)
-                try JSONEncoder().encode(recovery).write(to: directory.appendingPathComponent(stableID(item.id) + ".json"), options: .atomic)
-            } catch {
-                logger.diagnostic(DiagnosticRecord(event: "stall_recovery_write_failed", sessionID: session, assetID: item.id, error: error)) { _ in }
-            }
-            logger.diagnostic(DiagnosticRecord(event: "cancellation_unresponsive", sessionID: session, batchID: batch,
-                attemptID: active.attemptID.uuidString, assetID: item.id,
-                fields: ["operation": snapshot.operation, "idle_seconds": String(snapshot.idleSeconds), "decision": "restart_required"])) { _ in }
+        let showRestartRequired: @Sendable () -> Void = { [weak self] in
             Task { @MainActor in
                 guard let self, self.activeTransfers[item.id]?.attemptID == active.attemptID else { return }
                 self.status = Message(.status_attention); self.detail = Message(.error_restart_required)
                 self.log(tr(.error_restart_required))
             }
-        })
+        }
+        let watcher = TransferWatchdog(idleLimit: timeout, grace: grace, onTimeout: { snapshot in
+            logger.diagnostic(DiagnosticRecord(event: "attempt_stalled", sessionID: session, batchID: batch,
+                attemptID: active.attemptID.uuidString, assetID: item.id,
+                fields: ["operation": snapshot.operation, "idle_seconds": String(snapshot.idleSeconds), "decision": "cancel_then_retry_later"])) { _ in }
+        }, onUnresponsive: { snapshot in
+            let recovery = StalledTransferRecovery(assetID: item.id, filename: active.filename,
+                attemptID: active.attemptID.uuidString, operation: snapshot.operation, timestamp: Date())
+            do {
+                guard try ticket.persist(recovery) else { return }
+                if try policy.claim(enabled: UserDefaults.standard.bool(forKey: "restartWhenStalled") && UserDefaults.standard.bool(forKey: "automatic")) {
+                    try launchStallRecovery(app: app, receipt: ticket.url) { status in
+                        logger.diagnostic(DiagnosticRecord(event: "stall_restart_failed", sessionID: session,
+                            attemptID: active.attemptID.uuidString, assetID: item.id, fields: ["exit_status": String(status)])) { _ in }
+                        showRestartRequired()
+                    }
+                    logger.diagnostic(DiagnosticRecord(event: "stall_restart_requested", sessionID: session,
+                        attemptID: active.attemptID.uuidString, assetID: item.id, fields: ["operation": snapshot.operation])) { _ in }
+                    return
+                }
+            } catch {
+                logger.diagnostic(DiagnosticRecord(event: "stall_recovery_failed", sessionID: session, assetID: item.id, error: error)) { _ in }
+            }
+            logger.diagnostic(DiagnosticRecord(event: "cancellation_unresponsive", sessionID: session, batchID: batch,
+                attemptID: active.attemptID.uuidString, assetID: item.id,
+                fields: ["operation": snapshot.operation, "idle_seconds": String(snapshot.idleSeconds), "decision": "restart_required"])) { _ in }
+            showRestartRequired()
+        }, onStop: { ticket.finish() })
         watcher.progress(operation: diagnosticContexts[item.id]?["operation"])
         return watcher
     }
@@ -653,7 +671,6 @@ final class BridgeModel: ObservableObject {
         pendingRetryIDs.remove(item.id)
         defer {
             transferWatchdogs.removeValue(forKey: item.id)?.stop()
-            try? FileManager.default.removeItem(at: stalledDirectory.appendingPathComponent(stableID(item.id) + ".json"))
             diagnosticContexts[item.id] = nil
             activeTransfers[item.id] = nil
             pixelReservations[item.id] = nil

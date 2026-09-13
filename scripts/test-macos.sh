@@ -13,3 +13,5 @@ for test in ${PIXELBRIDGE_TEST_SUITES:-StallRecoveryTests BurstPhotoTests Diagno
   cp macos/Resources/*.json .build-cache/tests/
   ".build-cache/tests/$test"
 done
+
+python3 tests/stall_restart_helper.py

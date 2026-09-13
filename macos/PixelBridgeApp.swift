@@ -699,6 +699,10 @@ struct ContentView: View {
                     PreferenceRow(title: tr(.settings_concurrency), detail: tr(.settings_concurrency_description)) {
                         NumberControl(title: tr(.settings_concurrency), value: $model.concurrentTasks, range: NumericPreference.concurrentTasks.range, unit: tr(.unit_items)).disabled(model.busy)
                     }
+                    Divider()
+                    PreferenceRow(title: tr(.settings_stall_restart), detail: tr(.settings_stall_restart_description)) {
+                        Toggle(tr(.settings_stall_restart), isOn: $model.restartWhenStalled).labelsHidden().toggleStyle(.switch)
+                    }
                     Text(tr(.settings_resume_notice)).font(.system(size: 12)).foregroundStyle(Palette.muted)
                 }
                 Surface {

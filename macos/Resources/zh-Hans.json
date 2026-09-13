@@ -1,4 +1,6 @@
 {
+  "settings_stall_restart": "卡住时自动重启",
+  "settings_stall_restart_description": "默认关闭。自动备份时，单张照片 15 分钟无进展，取消后再等 30 秒仍无响应时，强制重启应用并恢复备份。保留已完成进度，最多每小时一次。",
   "error_item_stalled": "这张照片处理长时间没有进展，已延后重试，继续备份其他照片。",
   "error_restart_required": "照片处理没有响应取消。请重启 PixelBridge；已完成的进度会保留，卡住的任务稍后再试。",
   "error_resume_changed": "重新生成的文件与原有传输校验不一致，已停止重试以保留原进度。",

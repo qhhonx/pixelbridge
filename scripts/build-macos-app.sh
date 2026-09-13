@@ -25,6 +25,7 @@ xcrun swiftc -O -whole-module-optimization -parse-as-library \
   macos/Localization.swift macos/TransferWatchdog.swift macos/BridgeSupport.swift macos/ActivityLog.swift macos/Diagnostics.swift macos/BurstPhoto.swift macos/PixelCleanup.swift macos/BridgeModel.swift \
   macos/PhotoGrid.swift macos/AppUpdater.swift macos/PixelBridgeApp.swift \
   -o "$contents/MacOS/PixelBridge"
+xcrun clang -O2 -Wall -Wextra -Werror -mmacosx-version-min=14.0 macos/StallRecoveryHelper.c -o "$contents/MacOS/PixelBridgeRecovery"
 cp macos/Resources/*.json "$contents/Resources/"
 for locale in en zh-Hans; do
   mkdir -p "$contents/Resources/$locale.lproj"
@@ -37,6 +38,7 @@ python3 scripts/collect-licenses.py "$contents/Resources/Licenses"
 # A local integrity signature, deliberately independent of personal Apple certificates.
 # Sparkle's own nested helpers already carry ad hoc signatures from its verified release.
 codesign --force --sign - "$contents/MacOS/pixelbridge-core"
+codesign --force --sign - "$contents/MacOS/PixelBridgeRecovery"
 codesign --force --sign - "$contents/Frameworks/Sparkle.framework"
 codesign --force --sign - "$app_dir"
 codesign --verify --deep --strict "$app_dir"

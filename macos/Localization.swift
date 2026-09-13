@@ -339,6 +339,8 @@ enum TextKey: String, CaseIterable {
     case tasks_checking
     case tasks_preparing
     case tasks_verifying
+    case settings_stall_restart
+    case settings_stall_restart_description
     case settings_concurrency
     case settings_concurrency_description
     case tasks_summary

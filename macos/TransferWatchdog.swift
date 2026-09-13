@@ -21,12 +21,13 @@ final class TransferWatchdog: @unchecked Sendable {
     private let grace: Double
     private let onTimeout: @Sendable (Snapshot) -> Void
     private let onUnresponsive: @Sendable (Snapshot) -> Void
+    private let onStop: @Sendable () -> Void
     private var timer: DispatchSourceTimer?
     init(idleLimit: Double = 900, totalLimit: Double = 21_600, grace: Double = 30,
          onTimeout: @escaping @Sendable (Snapshot) -> Void,
-         onUnresponsive: @escaping @Sendable (Snapshot) -> Void) {
+         onUnresponsive: @escaping @Sendable (Snapshot) -> Void, onStop: @escaping @Sendable () -> Void = {}) {
         self.idleLimit = idleLimit; self.totalLimit = totalLimit; self.grace = grace
-        self.onTimeout = onTimeout; self.onUnresponsive = onUnresponsive
+        self.onTimeout = onTimeout; self.onUnresponsive = onUnresponsive; self.onStop = onStop
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue(label: "org.pixelbridge.transfer-watchdog", qos: .utility))
         timer.schedule(deadline: .now() + min(1, idleLimit), repeating: min(1, idleLimit))
         timer.setEventHandler { [weak self] in self?.tick() }
@@ -46,7 +47,11 @@ final class TransferWatchdog: @unchecked Sendable {
         lock.lock(); waitingForPermit = waiting; lastProgress = ProcessInfo.processInfo.systemUptime; lock.unlock()
     }
     var expired: Bool { lock.lock(); defer { lock.unlock() }; return timedOutAt != nil }
-    func stop() { lock.lock(); stopped = true; cancel = nil; lock.unlock(); timer?.cancel() }
+    func stop() {
+        lock.lock(); let wasStopped = stopped; stopped = true; cancel = nil; lock.unlock()
+        timer?.cancel()
+        if !wasStopped { onStop() }
+    }
     deinit { timer?.cancel() }
     private func tick() {
         let now = ProcessInfo.processInfo.systemUptime
@@ -93,4 +98,53 @@ struct StalledTransferRecovery: Codable, Sendable {
     let attemptID: String
     let operation: String
     let timestamp: Date
+}
+
+// Serializes receipt creation with completion, so a late timeout callback cannot
+// leave a recovery request behind after the operation has returned.
+final class StalledTransferTicket: @unchecked Sendable {
+    let url: URL
+    private let lock = NSLock()
+    private var finished = false
+    init(directory: URL, attemptID: UUID) { url = directory.appendingPathComponent(attemptID.uuidString + ".json") }
+    func persist(_ record: StalledTransferRecovery) throws -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard !finished else { return false }
+        try ensureDirectory(url.deletingLastPathComponent())
+        try JSONEncoder().encode(record).write(to: url, options: .atomic)
+        return true
+    }
+    func finish() {
+        lock.lock(); defer { lock.unlock() }
+        finished = true
+        try? FileManager.default.removeItem(at: url)
+    }
+}
+
+// A persisted rate limit also applies after relaunch. Never restart repeatedly
+// because of a library-wide problem, or launch more than one helper per hour.
+final class StallRestartPolicy: @unchecked Sendable {
+    private let lock = NSLock()
+    private let receipt: URL
+    init(state: URL) { receipt = state.appendingPathComponent("last-stall-restart.json") }
+    func claim(enabled: Bool, now: Date = Date()) throws -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard enabled else { return false }
+        if FileManager.default.fileExists(atPath: receipt.path) {
+            let previous = try JSONDecoder().decode(Date.self, from: Data(contentsOf: receipt))
+            guard now.timeIntervalSince(previous) >= 3600 else { return false }
+        }
+        try JSONEncoder().encode(now).write(to: receipt, options: .atomic)
+        return true
+    }
+}
+
+func launchStallRecovery(app: URL, receipt: URL, onFailure: @escaping @Sendable (Int32) -> Void) throws {
+    let helper = Process()
+    helper.executableURL = app.appendingPathComponent("Contents/MacOS/PixelBridgeRecovery")
+    helper.arguments = [app.path, receipt.path]
+    helper.terminationHandler = { process in if process.terminationStatus != 0 { onFailure(process.terminationStatus) } }
+    helper.standardInput = FileHandle.nullDevice
+    helper.standardOutput = FileHandle.nullDevice; helper.standardError = FileHandle.nullDevice
+    try helper.run()
 }

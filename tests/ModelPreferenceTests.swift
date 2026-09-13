@@ -33,6 +33,16 @@ import Foundation
                 else { defaults.removeObject(forKey: key) }
             }
         }
+        let savedRestart = defaults.object(forKey: "restartWhenStalled")
+        defer { if let savedRestart { defaults.set(savedRestart, forKey: "restartWhenStalled") } else { defaults.removeObject(forKey: "restartWhenStalled") } }
+        defaults.removeObject(forKey: "restartWhenStalled")
+        precondition(!BridgeModel().restartWhenStalled)
+        let restartPreferences = BridgeModel()
+        restartPreferences.restartWhenStalled = true
+        precondition(BridgeModel().restartWhenStalled)
+        restartPreferences.restartWhenStalled = false
+        precondition(!BridgeModel().restartWhenStalled)
+        print("PASS: stalled-app restart is off by default and only persists explicit opt-in")
         let model = BridgeModel()
         model.autoReclaimCache = false
         precondition(!BridgeModel().autoReclaimCache)
