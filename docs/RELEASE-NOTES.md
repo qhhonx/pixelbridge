@@ -1,9 +1,5 @@
-PixelBridge 0.1.0-beta.17 — 避免单张照片阻塞备份。
+PixelBridge 0.1.0-beta.18 — 保留照片拍摄日期。
 
-- 单张处理停滞时延后重试，继续备份其他照片，并保留已完成进度。
-- 新增“卡住时自动重启”设置，默认关闭。开启后，仅在取消无效时恢复应用，最多每小时一次。
-- 增加处理阶段记录，便于定位卡顿。
+缺少拍摄日期的照片会在交付副本中补齐 Apple 图库时间，并在 Pixel 扫描前保存正确文件时间。支持普通照片、动图和连拍，保留原件、画质及已有有效元数据。
 
-Stalled photos now retry later without blocking the remaining queue. Optional automatic restart recovery is off by default, limited to once per hour, and preserves completed transfers. Processing stages are recorded for diagnostics.
-
-Apple Silicon · macOS 14+. Use **Check for Updates** in PixelBridge or download the arm64 ZIP. Free beta, ad hoc signed and not notarized by Apple.
+修复兼容旧任务重试，并生成本地日期核对清单。已有云端照片不会自动删除或重传；视频内嵌日期冲突单独核查。

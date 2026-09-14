@@ -59,6 +59,9 @@ enum Commands {
     },
     /// Copy a prepared Motion Photo into Pixel's Camera folder.
     Push {
+        /// PhotoKit absolute capture instant, in Unix milliseconds.
+        #[arg(long, allow_hyphen_values = true)]
+        capture_time_ms: Option<i64>,
         #[arg(long)]
         file: PathBuf,
         #[arg(long)]
@@ -155,7 +158,14 @@ fn main() -> Result<()> {
             device,
             adb,
             destination,
-        } => push(&file, device.as_deref(), &adb, &destination),
+            capture_time_ms,
+        } => push(
+            &file,
+            device.as_deref(),
+            &adb,
+            &destination,
+            capture_time_ms,
+        ),
         Commands::VerifyDevice {
             file,
             remote,
@@ -544,7 +554,14 @@ fn adb_command(adb: &Path, device: Option<&str>) -> Command {
     command
 }
 
-fn push(file: &Path, device: Option<&str>, adb: &Path, destination: &str) -> Result<()> {
+fn push(
+    file: &Path,
+    device: Option<&str>,
+    adb: &Path,
+    destination: &str,
+    capture_time_ms: Option<i64>,
+) -> Result<()> {
+    let capture_time = capture_time_ms.map(pixel_capture_time).transpose()?;
     ensure_file(file, "prepared Motion Photo")?;
     let filename = file
         .file_name()
@@ -568,6 +585,9 @@ fn push(file: &Path, device: Option<&str>, adb: &Path, destination: &str) -> Res
         run_checked(command.arg("push").arg(file).arg(&staging), "ADB push")?;
         println!("progress: verifying");
         verify_remote_hash(adb, device, &staging, &local_hash)?;
+        if let (Some(ms), Some(date)) = (capture_time_ms, capture_time.as_deref()) {
+            set_remote_capture_time(adb, device, &staging, date, ms)?;
+        }
         let mut commit = adb_command(adb, device);
         run_checked(
             commit.args([
@@ -576,6 +596,11 @@ fn push(file: &Path, device: Option<&str>, adb: &Path, destination: &str) -> Res
             ]),
             "commit Pixel file",
         )?;
+    }
+    // Also repair a same-hash retry before rescanning. A previous attempt may
+    // have committed its bytes but failed to restore the filesystem timestamp.
+    if let (Some(ms), Some(date)) = (capture_time_ms, capture_time.as_deref()) {
+        set_remote_capture_time(adb, device, &remote, date, ms)?;
     }
     println!("progress: verifying");
     let mut scan = adb_command(adb, device);
@@ -595,6 +620,50 @@ fn push(file: &Path, device: Option<&str>, adb: &Path, destination: &str) -> Res
     println!("remote: {remote}");
     println!("sha256: {local_hash}");
     println!("delivery: verified and submitted to Android media scanner");
+    Ok(())
+}
+
+fn pixel_capture_time(ms: i64) -> Result<String> {
+    use chrono::Datelike;
+    let date = chrono::DateTime::from_timestamp_millis(ms).context("invalid capture timestamp")?;
+    anyhow::ensure!(
+        (1..=9999).contains(&date.year()),
+        "capture year outside supported range"
+    );
+    Ok(date.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
+}
+fn set_remote_capture_time(
+    adb: &Path,
+    device: Option<&str>,
+    remote: &str,
+    date: &str,
+    ms: i64,
+) -> Result<()> {
+    let mut touch = adb_command(adb, device);
+    run_checked(
+        touch.args([
+            "shell",
+            &format!(
+                "TZ=UTC touch -c -m -d {} {}",
+                shell_quote(date),
+                shell_quote(remote)
+            ),
+        ]),
+        "preserve Pixel capture time",
+    )?;
+    let mut stat = adb_command(adb, device);
+    let value = command_stdout_bytes(
+        stat.args(["shell", &format!("stat -c %Y {}", shell_quote(remote))]),
+        "verify Pixel capture time",
+    )?;
+    let seconds: i64 = String::from_utf8_lossy(&value)
+        .trim()
+        .parse()
+        .context("invalid Pixel file timestamp")?;
+    anyhow::ensure!(
+        seconds == ms.div_euclid(1000),
+        "Pixel file capture time verification failed"
+    );
     Ok(())
 }
 
@@ -755,6 +824,19 @@ mod tests {
         assert!(result.contains("</rdf:Description>"));
     }
 
+    #[test]
+    fn capture_time_is_utc_and_preserves_milliseconds() {
+        assert_eq!(
+            pixel_capture_time(1786761701123).unwrap(),
+            "2026-08-15T02:41:41.123Z"
+        );
+        assert_eq!(pixel_capture_time(-1).unwrap(), "1969-12-31T23:59:59.999Z");
+        assert_eq!(
+            pixel_capture_time(951782400007).unwrap(),
+            "2000-02-29T00:00:00.007Z"
+        );
+        assert!(pixel_capture_time(i64::MAX).is_err());
+    }
     #[test]
     fn remote_paths_are_shell_quoted() {
         assert_eq!(shell_quote("a'b $(id)"), "'a'\\''b $(id)'");

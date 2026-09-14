@@ -32,6 +32,7 @@ struct LibraryItem: Identifiable, Equatable {
     let kind: String
     var modified: Date? = nil
     var diagnosticSnapshot: AssetDiagnosticSnapshot? = nil
+    var captureTimeMilliseconds: Int64? = nil
 }
 struct DeviceInfo: Identifiable {
     let id: String
@@ -321,7 +322,7 @@ func isTemporaryInterruption(_ error: Error, depth: Int = 0) -> Bool {
     if let failure = error as? BridgeFailure,
        [.error_photos_permission, .cleanup_draining, .error_pixel_temperature, .error_pixel_storage, .error_pixel_disconnected,
         .error_pixel_waiting, .error_pixel_generation, .error_cache_budget, .error_mac_storage,
-        .error_download_budget, .error_burst_cache_budget, .error_timeout].contains(failure.message.key) { return true }
+        .error_download_budget, .error_burst_cache_budget, .error_date_cache_budget, .error_timeout].contains(failure.message.key) { return true }
     let ns = error as NSError
     if ns.domain == NSURLErrorDomain { return true }
     if ns.domain == NSPOSIXErrorDomain && ns.code == Int(ENOSPC) { return true }
@@ -409,6 +410,7 @@ struct PreparedDelivery {
     let file: URL
     let hash: String
     let bytes: Int64
+    var captureTimeMilliseconds: Int64? = nil
 }
 enum TaskStage: Int {
     case waiting, exporting, preparing, transferring, verifying, checking

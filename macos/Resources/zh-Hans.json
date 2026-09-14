@@ -1,4 +1,6 @@
 {
+  "error_capture_date": "无法验证交付副本的拍摄日期，已保留原件。",
+  "error_date_cache_budget": "中转空间不足，暂时无法创建保留拍摄日期的交付副本。",
   "settings_stall_restart": "卡住时自动重启",
   "settings_stall_restart_description": "默认关闭。自动备份时，单张照片 15 分钟无进展，取消后再等 30 秒仍无响应时，强制重启应用并恢复备份。保留已完成进度，最多每小时一次。",
   "error_item_stalled": "这张照片处理长时间没有进展，已延后重试，继续备份其他照片。",

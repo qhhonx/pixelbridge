@@ -2,7 +2,7 @@
 import argparse, pathlib, re, subprocess
 root = pathlib.Path(__file__).resolve().parents[1]
 parser=argparse.ArgumentParser(); parser.add_argument('--app',type=pathlib.Path);args=parser.parse_args()
-forbidden_names = {'.DS_Store', '.env', 'auth.json', 'queue.sqlite3', 'queue.jsonl', 'retry.json', 'activity.log'}
+forbidden_names = {'.DS_Store', '.env', 'auth.json', 'queue.sqlite3', 'queue.jsonl', 'retry.json', 'activity.log', 'capture-date-inventory.json', 'capture-date-audit.csv', 'capture-date-candidates.csv', 'pixel-index-snapshot.json'}
 patterns = [rb'/Users/[^/\s]+/', rb'/home/runner/work/', rb'Apple Development:', rb'-----BEGIN [A-Z ]*PRIVATE KEY-----', rb'gh[pousr]_[A-Za-z0-9]{30,}']
 if args.app:
     paths=[p for p in args.app.rglob('*') if p.is_file() and not p.is_symlink()]

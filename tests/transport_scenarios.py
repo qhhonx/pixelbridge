@@ -2,7 +2,7 @@
 import tempfile, pathlib, subprocess, sys, os, json, hashlib, concurrent.futures, sqlite3
 CORE = pathlib.Path(__file__).resolve().parents[1] / 'target/release/pixelbridge'
 STUB = r'''
-import os, sys, pathlib, shlex, hashlib, shutil, time
+import os, sys, pathlib, shlex, hashlib, shutil, time, datetime
 root=pathlib.Path(os.environ['FAKE_ROOT']); args=sys.argv[1:]
 if args[:1]==['-s']: args=args[2:]
 mode=os.environ.get('FAKE_MODE','normal')
@@ -21,6 +21,11 @@ if args[0]=='push':
  sys.exit(0)
 if args[0]=='shell':
  cmd=shlex.split(args[1]) if len(args)==2 else args[1:]
+ if cmd[0]=='TZ=UTC' and cmd[1]=='touch':
+  if mode=='time_fail': sys.exit(1)
+  stamp=datetime.datetime.fromisoformat(cmd[-2].replace('Z','+00:00')).timestamp()
+  os.utime(local(cmd[-1]),(stamp,stamp)); sys.exit(0)
+ if cmd[0]=='stat': print(int(local(cmd[-1]).stat().st_mtime)); sys.exit(0)
  if cmd[0]=='sha256sum':
   if mode=='offline': sys.exit(1)
   p=local(cmd[1])
@@ -47,6 +52,23 @@ with tempfile.TemporaryDirectory(prefix='pixelbridge-scenarios-') as temp:
  before=(root/'calls').read_text().count("['push'"); push(); assert (root/'calls').read_text().count("['push'")==before
  remote.write_bytes(b'damaged'); push(); assert remote.read_bytes()==src.read_bytes()
  push('scan_fail',False); before=(root/'calls').read_text().count("['push'"); push(); assert (root/'calls').read_text().count("['push'")==before
+ # Milliseconds reach the filesystem before publication and every scanner retry.
+ stamp=1786761701123
+ before=(root/'calls').read_text().count("['push'")
+ run('push','--file',str(src),'--adb',str(adb),'--capture-time-ms',str(stamp))
+ assert round(remote.stat().st_mtime*1000)==stamp
+ assert (root/'calls').read_text().count("['push'")==before
+ calls=(root/'calls').read_text().splitlines()
+ assert 'stat -c %Y' in calls[-3] and "'am'" in calls[-2]
+ run('push','--file',str(src),'--adb',str(adb),'--capture-time-ms',str(stamp),mode='time_fail',success=False)
+ assert "'am'" not in (root/'calls').read_text().splitlines()[-1]
+ # A first publication must not reach the gallery if timestamp restoration fails.
+ fresh=root/'fresh-date.jpg'; fresh.write_bytes(b'new-date-content')
+ run('push','--file',str(fresh),'--adb',str(adb),'--capture-time-ms',str(stamp),mode='time_fail',success=False)
+ assert not (remote.parent/fresh.name).exists()
+ run('push','--file',str(fresh),'--adb',str(adb),'--capture-time-ms',str(stamp))
+ assert round((remote.parent/fresh.name).stat().st_mtime*1000)==stamp
+ print('PASS: capture milliseconds restored on same-hash retry; failed timestamp write stops before scanning')
  for mode in ['normal','offline','hot','full']:
   run('device-status','--adb',str(adb),'--device','fixture',mode=mode,success=mode=='normal')
  # df -k uses KiB: 1,562,500 blocks are exactly 1.6 decimal GB.

@@ -1,4 +1,6 @@
 {
+  "error_capture_date": "Could not verify the delivery copy’s capture date. The original is preserved.",
+  "error_date_cache_budget": "Not enough staging space to create a delivery copy with its capture date.",
   "settings_stall_restart": "Restart automatically when stuck",
   "settings_stall_restart_description": "Off by default. During automatic backup, force-restart and resume after a photo makes no progress for 15 minutes and cancellation remains unresponsive for 30 seconds. Completed transfers are preserved. At most once per hour.",
   "error_item_stalled": "This photo stopped making progress. Its retry has been deferred so other photos can continue.",

@@ -388,6 +388,7 @@ final class BridgeModel: ObservableObject {
                 if let old = previous[id], old.date == date, old.kind == kind, old.modified == asset.modificationDate { item = old }
                 else { item = LibraryItem(id: id, name: date.formatted(date: .abbreviated, time: .shortened), date: date, kind: kind, modified: asset.modificationDate) }
                 item.diagnosticSnapshot = AssetDiagnosticSnapshot(asset)
+                item.captureTimeMilliseconds = CaptureDatePlan(asset.creationDate).epochMilliseconds
                 if previous[id] == nil { added += 1 }
                 items.append(item)
                 gallery["all", default: []].append(item)
@@ -404,6 +405,15 @@ final class BridgeModel: ObservableObject {
         if gallery != result.4 { gallery = result.4; galleryRevision += 1 }
         if totalAssets != result.1 { totalAssets = result.1 }
         if libraryCounts != result.2 { libraryCounts = result.2 }
+        // Local audit snapshot uses stable identities, without opening resources or
+        // exporting photo contents. Unknown PhotoKit dates remain explicitly absent.
+        let inventoryURL = state.appendingPathComponent("capture-date-inventory.json")
+        let inventoryItems = result.0
+        do {
+            try await Task.detached(priority: .utility) {
+                try captureDateInventory(inventoryItems).write(to: inventoryURL, options: .atomic)
+            }.value
+        } catch { diagnostic("capture_date_inventory_failed", error: error) }
         observedAssets = result.3
         scannedRevision = revision; lastScan = Date(); lastLibraryRefresh = lastScan
         if hadSnapshot {
@@ -1016,6 +1026,9 @@ final class BridgeModel: ObservableObject {
         let jobDir = staging.appendingPathComponent(stableID(item.id))
         try ensureDirectory(jobDir)
         let source = jobDir.appendingPathComponent("original." + ext)
+        let datePlan = try CaptureDatePlan.loadOrCreate(at: jobDir.appendingPathComponent("capture-date.json"), date: asset.creationDate, supplementMissingDates: prior?.sha256 == nil)
+        diagnosticContext(item.id, ["capture_time_ms": datePlan.epochMilliseconds.map(String.init) ?? "unknown", "capture_timezone": "UTC_absolute_instant"])
+
         let outputName = "PB_" + stableID(item.id) + (live ? "_MP." : ".") + ext
         let burst = live ? nil : BurstPhotoMetadata(asset)
         if let burst {
@@ -1023,9 +1036,9 @@ final class BridgeModel: ObservableObject {
             diagnosticContext(item.id, burst.fields)
         }
         let outputFile = jobDir.appendingPathComponent(outputName)
-        var prepared = (live || burst != nil) ? outputFile : source
+        var prepared = outputFile
         var hash = prior?.sha256
-        if burst != nil, let resumed = try await resumableBurstPhoto(source: source, delivery: outputFile,
+        if let resumed = try await resumableBurstPhoto(source: source, delivery: outputFile,
             expectedHash: hash, hash: { try await self.hashFile($0) }) {
             prepared = resumed
             diagnosticContext(item.id, ["burst_copy": resumed == source ? "legacy_original_preserved" : "prepared_copy_preserved"])
@@ -1055,6 +1068,19 @@ final class BridgeModel: ObservableObject {
             diagnosticContext(item.id, ["operation": "primary_download", "network_access_allowed": "true",
                 "download_budget_bytes": String(budget), "primary_cached": String(FileManager.default.fileExists(atPath: source.path))])
             try await exportOriginal(primary, to: source, budget: budget)
+            let dated = datePlan.supplementMissingDates ? jobDir.appendingPathComponent("dated-original." + ext) : source
+            if !videoAsset && datePlan.supplementMissingDates {
+                diagnosticContext(item.id, ["operation": "capture_date_metadata"])
+                let changed = try await prepareDatedPhoto(source: source, delivery: dated, plan: datePlan,
+                    exiftool: exiftool, budget: await availableBudget())
+                diagnosticContext(item.id, ["capture_date_added": String(changed)])
+            } else if videoAsset {
+                // Container timestamps have different UTC/local conventions. Keep
+                // video bytes unchanged; use PhotoKit time for filesystem fallback.
+                diagnosticContext(item.id, ["video_embedded_dates": "preserved_for_audit"])
+            } else {
+                diagnosticContext(item.id, ["capture_date_added": "false", "capture_date_audit": "legacy_hash_preserved"])
+            }
             if live {
                 diagnosticContext(item.id, ["operation": "motion_resource_selection"])
                 guard let motion = resources.first(where: { $0.type == .pairedVideo }) else { throw fail(Message(.error_motion_missing)) }
@@ -1069,18 +1095,23 @@ final class BridgeModel: ObservableObject {
                 try await guardDevice(extraBytes: imageSize + videoSize * 8, cacheExtraBytes: imageSize + videoSize * 8)
                 diagnosticContext(item.id, ["operation": "motion_conversion"])
                 updateStage(item.id, .preparing)
-                let text = try await invoke(["prepare", "--image", source.path, "--video", movie.path, "--output", prepared.path, "--exiftool", exiftool.path, "--force"])
+                let text = try await invoke(["prepare", "--image", dated.path, "--video", movie.path, "--output", prepared.path, "--exiftool", exiftool.path, "--force"])
                 hash = value("sha256", text)
             } else if let burst {
                 diagnosticContext(item.id, ["operation": "burst_metadata"])
                 updateStage(item.id, .preparing)
-                hash = try await prepareBurstPhoto(source: source, delivery: outputFile, metadata: burst,
+                hash = try await prepareBurstPhoto(source: dated, delivery: outputFile, metadata: burst,
                     exiftool: exiftool, budget: await availableBudget(), expectedHash: prior?.sha256,
                     hash: { try await self.hashFile($0) })
                 prepared = outputFile
                 diagnosticContext(item.id, ["burst_copy": "metadata_verified"])
             } else {
                 diagnosticContext(item.id, ["operation": "file_hash"])
+                if FileManager.default.fileExists(atPath: outputFile.path) { try FileManager.default.removeItem(at: outputFile) }
+                // Dates were written on the independent still copy; no further local
+                // metadata writes occur after creating this delivery link.
+                try FileManager.default.linkItem(at: videoAsset ? source : dated, to: outputFile)
+                prepared = outputFile
                 hash = try await hashFile(prepared)
             }
             guard let hash else { throw fail(Message(.error_hash_unavailable)) }
@@ -1104,7 +1135,7 @@ final class BridgeModel: ObservableObject {
         updateQueueRow(try JSONDecoder().decode(QueueRow.self, from: Data(output.utf8)))
         diagnosticContext(item.id, ["prepared_bytes": String(size)])
         diagnostic("asset_prepared", item: item)
-        return PreparedDelivery(item: item, file: delivery, hash: hash, bytes: size)
+        return PreparedDelivery(item: item, file: delivery, hash: hash, bytes: size, captureTimeMilliseconds: datePlan.epochMilliseconds)
     }
     private func deliver(_ delivery: PreparedDelivery) async throws {
         let item = delivery.item, hash = delivery.hash
@@ -1118,8 +1149,10 @@ final class BridgeModel: ObservableObject {
         if let testDeliverItem { try await testDeliverItem(delivery); return }
         #endif
         let attemptID = activeTransfers[item.id]?.attemptID
+        var pushArguments = ["push", "--file", delivery.file.path, "--adb", adbPath, "--device", selectedDevice]
+        if let milliseconds = delivery.captureTimeMilliseconds { pushArguments += ["--capture-time-ms", String(milliseconds)] }
         let output = try await processOutput(core,
-            ["push", "--file", delivery.file.path, "--adb", adbPath, "--device", selectedDevice],
+            pushArguments,
             onProgress: { [weak self] value in
                 Task { @MainActor in
                     guard let self, self.activeTransfers[item.id]?.attemptID == attemptID else { return }
