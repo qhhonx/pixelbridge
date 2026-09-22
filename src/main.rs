@@ -401,6 +401,12 @@ fn validate_live_pair(image: &Value, video: &Value) -> Result<()> {
 fn live_photo_timestamp_us(metadata: &Value) -> Result<i64> {
     let object = metadata.as_object().context("invalid video metadata")?;
     for (key, value) in object {
+        if key.ends_with(":StillImageTime") && value.as_i64() == Some(0) {
+            // Some Apple pairs pin the still at the first video frame. Their
+            // timed metadata spans the whole movie, so TrackDuration is not
+            // the presentation timestamp in this case.
+            return Ok(0);
+        }
         if key.ends_with(":StillImageTime") && value.as_i64() == Some(-1) {
             let prefix = key.trim_end_matches("StillImageTime");
             let duration_key = format!("{prefix}TrackDuration");
@@ -826,6 +832,12 @@ mod tests {
         assert_eq!(live_photo_timestamp_us(&text).unwrap(), 1667);
         let invalid = serde_json::json!({"Track5:StillImageTime": -1, "Track5:TrackDuration": "NaN"});
         assert!(live_photo_timestamp_us(&invalid).is_err());
+    }
+
+    #[test]
+    fn still_time_zero_is_first_frame_even_when_track_spans_movie() {
+        let metadata = serde_json::json!({"Track3:StillImageTime": 0, "Track3:TrackDuration": 2.91});
+        assert_eq!(live_photo_timestamp_us(&metadata).unwrap(), 0);
     }
 
     #[test]

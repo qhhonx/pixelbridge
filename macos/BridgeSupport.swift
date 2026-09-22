@@ -2,6 +2,7 @@ import AppKit
 import Photos
 import Foundation
 import CryptoKit
+import ImageIO
 
 struct QueueRow: Decodable, Identifiable {
     let asset_id: String
@@ -254,6 +255,69 @@ func isHEICFile(_ file: URL) throws -> Bool {
     let header = try handle.read(upToCount: 12) ?? Data()
     guard header.count == 12, header[4...7].elementsEqual(Data("ftyp".utf8)) else { return false }
     return ["heic", "heix", "hevc", "hevx", "heim", "heis"].contains(String(decoding: header[8...11], as: UTF8.self))
+}
+
+func isGIFFile(_ file: URL) throws -> Bool {
+    let handle = try FileHandle(forReadingFrom: file)
+    defer { try? handle.close() }
+    let header = try handle.read(upToCount: 6) ?? Data()
+    return header == Data("GIF87a".utf8) || header == Data("GIF89a".utf8)
+}
+
+// Google Photos does not list JP2 as a supported upload type. Decode one
+// 8-bit JPEG 2000 image into an independent PNG copy and verify its rendered
+// pixels before using it as a delivery. Keep the PhotoKit export unchanged.
+func prepareJP2PNG(source: URL, delivery: URL, budget: Int64) throws {
+    let fm = FileManager.default
+    guard source.standardizedFileURL != delivery.standardizedFileURL,
+          source.pathExtension.lowercased() == "jp2" else { throw fail(Message(.error_format_unsupported, "jp2")) }
+    guard let imageSource = CGImageSourceCreateWithURL(source as CFURL, nil),
+          CGImageSourceGetType(imageSource) as String? == "public.jpeg-2000",
+          CGImageSourceGetCount(imageSource) == 1,
+          let image = CGImageSourceCreateImageAtIndex(imageSource, 0, nil),
+          image.bitsPerComponent == 8,
+          image.width > 0, image.height > 0 else { throw fail(Message(.error_format_unsupported, "jp2")) }
+    let (pixels, overflow) = Int64(image.width).multipliedReportingOverflow(by: Int64(image.height))
+    guard !overflow, pixels > 0, pixels <= budget / 8 else { throw fail(Message(.error_date_cache_budget)) }
+    let temporary = delivery.deletingLastPathComponent().appendingPathComponent(".jp2-" + UUID().uuidString + ".png")
+    defer { try? fm.removeItem(at: temporary) }
+    guard let destination = CGImageDestinationCreateWithURL(temporary as CFURL, "public.png" as CFString, 1, nil) else {
+        throw fail(Message(.error_format_unsupported, "jp2"))
+    }
+    CGImageDestinationAddImageFromSource(destination, imageSource, 0, nil)
+    guard CGImageDestinationFinalize(destination),
+          let pngSource = CGImageSourceCreateWithURL(temporary as CFURL, nil),
+          CGImageSourceGetType(pngSource) as String? == "public.png",
+          CGImageSourceGetCount(pngSource) == 1,
+          let png = CGImageSourceCreateImageAtIndex(pngSource, 0, nil),
+          png.width == image.width, png.height == image.height,
+          png.bitsPerComponent == image.bitsPerComponent,
+          image.colorSpace?.copyICCData() == png.colorSpace?.copyICCData(),
+          (CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [String: Any])?[kCGImagePropertyOrientation as String] as? Int ==
+              (CGImageSourceCopyPropertiesAtIndex(pngSource, 0, nil) as? [String: Any])?[kCGImagePropertyOrientation as String] as? Int,
+          let before = renderedPixels(image), let after = renderedPixels(png),
+          before == after else {
+        throw fail(Message(.error_format_unsupported, "jp2"))
+    }
+    let bytes = Int64((try temporary.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0)
+    guard bytes <= budget else { throw fail(Message(.error_date_cache_budget)) }
+    try Task.checkCancellation()
+    if fm.fileExists(atPath: delivery.path) { try fm.removeItem(at: delivery) }
+    try fm.moveItem(at: temporary, to: delivery)
+}
+
+private func renderedPixels(_ image: CGImage) -> Data? {
+    guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+    let bytesPerRow = image.width * 4
+    var pixels = Data(count: bytesPerRow * image.height)
+    let drew = pixels.withUnsafeMutableBytes { raw -> Bool in
+        guard let context = CGContext(data: raw.baseAddress, width: image.width, height: image.height,
+            bitsPerComponent: 8, bytesPerRow: bytesPerRow, space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return true
+    }
+    return drew ? pixels : nil
 }
 
 // Retry/interrupted work has priority over new photos, independently of library

@@ -1021,7 +1021,7 @@ final class BridgeModel: ObservableObject {
         diagnosticContext(item.id, ["operation": "format_validation"])
         let live = asset.mediaSubtypes.contains(.photoLive)
         let ext = (primary.originalFilename as NSString).pathExtension.lowercased()
-        guard ["heic", "heif", "jpg", "jpeg", "png", "gif", "webp", "tif", "tiff", "mov", "mp4", "m4v"].contains(ext) else { throw fail(Message(.error_format_unsupported, String(describing: ext))) }
+        guard ["heic", "heif", "jpg", "jpeg", "png", "gif", "webp", "tif", "tiff", "dng", "jp2", "mov", "mp4", "m4v"].contains(ext) else { throw fail(Message(.error_format_unsupported, String(describing: ext))) }
         diagnosticContext(item.id, ["operation": "staging_setup"])
         let jobDir = staging.appendingPathComponent(stableID(item.id))
         try ensureDirectory(jobDir)
@@ -1068,8 +1068,30 @@ final class BridgeModel: ObservableObject {
             diagnosticContext(item.id, ["operation": "primary_download", "network_access_allowed": "true",
                 "download_budget_bytes": String(budget), "primary_cached": String(FileManager.default.fileExists(atPath: source.path))])
             try await exportOriginal(primary, to: source, budget: budget)
+            if ext == "dng" {
+                let actualType = try await processOutput(exiftool, ["-s3", "-FileType", "--", source.path])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                guard actualType == "DNG" else { throw fail(Message(.error_format_unsupported, "dng")) }
+            }
             var still = source
             var stillExtension = ext
+            if try !live && prior?.sha256 == nil && ["jpg", "jpeg"].contains(ext) && isGIFFile(source) {
+                stillExtension = "gif"
+                still = jobDir.appendingPathComponent("corrected-original.gif")
+                if FileManager.default.fileExists(atPath: still.path) { try FileManager.default.removeItem(at: still) }
+                try FileManager.default.linkItem(at: source, to: still)
+                outputFile = jobDir.appendingPathComponent("PB_" + stableID(item.id) + ".gif")
+                prepared = outputFile
+                diagnosticContext(item.id, ["still_format_correction": "gif_content_jpg_filename"])
+            }
+            if !live && prior?.sha256 == nil && ext == "jp2" {
+                stillExtension = "png"
+                still = jobDir.appendingPathComponent("converted-original.png")
+                try prepareJP2PNG(source: source, delivery: still, budget: await availableBudget())
+                outputFile = jobDir.appendingPathComponent("PB_" + stableID(item.id) + ".png")
+                prepared = outputFile
+                diagnosticContext(item.id, ["still_format_correction": "jp2_to_verified_png"])
+            }
             if try live && prior?.sha256 == nil && ["jpg", "jpeg"].contains(ext) && isHEICFile(source) {
                 // Keep the cached PhotoKit export unchanged. A correctly named
                 // link lets date annotation and Motion assembly detect HEIC.
