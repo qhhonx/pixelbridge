@@ -406,7 +406,12 @@ fn live_photo_timestamp_us(metadata: &Value) -> Result<i64> {
             let duration_key = format!("{prefix}TrackDuration");
             let duration = object
                 .get(&duration_key)
-                .and_then(Value::as_f64)
+                .and_then(|value| {
+                    value
+                        .as_f64()
+                        .or_else(|| value.as_str().and_then(|text| text.parse::<f64>().ok()))
+                })
+                .filter(|seconds| seconds.is_finite() && *seconds >= 0.0)
                 .with_context(|| format!("missing {duration_key}"))?;
             return Ok((duration * 1_000_000.0).round() as i64);
         }
@@ -812,6 +817,16 @@ fn check_output(output: Output, label: &str) -> Result<Output> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn still_time_accepts_exiftool_short_duration_strings() {
+        let numeric = serde_json::json!({"Track5:StillImageTime": -1, "Track5:TrackDuration": 0.00166666666666667});
+        let text = serde_json::json!({"Track5:StillImageTime": -1, "Track5:TrackDuration": "0.00166666666666667"});
+        assert_eq!(live_photo_timestamp_us(&numeric).unwrap(), 1667);
+        assert_eq!(live_photo_timestamp_us(&text).unwrap(), 1667);
+        let invalid = serde_json::json!({"Track5:StillImageTime": -1, "Track5:TrackDuration": "NaN"});
+        assert!(live_photo_timestamp_us(&invalid).is_err());
+    }
 
     #[test]
     fn xmp_missing_and_self_closing_packets_are_supported() {
