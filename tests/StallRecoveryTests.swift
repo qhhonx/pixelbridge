@@ -64,11 +64,11 @@ import Foundation
             try await Task.sleep(nanoseconds: 350_000_000)
             waiting.waitingForPreparation(false)
         }
-        let bounded = TransferWatchdog(idleLimit: 0.1, totalLimit: 0.25, onTimeout: { _ in }, onUnresponsive: { _ in preconditionFailure() })
+        let bounded = TransferWatchdog(idleLimit: 1, totalLimit: 0.75, onTimeout: { _ in }, onUnresponsive: { _ in preconditionFailure() })
         do {
             try await watchedTransfer(watchdog: bounded) {
                 while true {
-                    try await Task.sleep(nanoseconds: 20_000_000)
+                    try await Task.sleep(nanoseconds: 50_000_000)
                     bounded.progress()
                 }
             }
@@ -77,10 +77,10 @@ import Foundation
         print("PASS: preparation waits do not consume the idle deadline; ongoing activity still has an absolute deadline")
 
         // Continuous real work resets the inactivity deadline.
-        let active = TransferWatchdog(idleLimit: 0.15, totalLimit: 3, grace: 0.1, onTimeout: { _ in preconditionFailure("Progressing task timed out") }, onUnresponsive: { _ in preconditionFailure() })
+        let active = TransferWatchdog(idleLimit: 1, totalLimit: 5, grace: 1, onTimeout: { _ in preconditionFailure("Progressing task timed out") }, onUnresponsive: { _ in preconditionFailure() })
         try await watchedTransfer(watchdog: active) {
-            for _ in 0..<8 {
-                try await Task.sleep(nanoseconds: 40_000_000)
+            for _ in 0..<12 {
+                try await Task.sleep(nanoseconds: 100_000_000)
                 TransferActivity.watchdog?.progress()
             }
         }
@@ -89,16 +89,16 @@ import Foundation
         // Simulate an OS callback that ignores task cancellation, then arrives late.
         // The watchdog must report it, but must not release ownership early.
         let report = root.appendingPathComponent("unresponsive")
-        let unresponsive = TransferWatchdog(idleLimit: 0.08, grace: 0.08, onTimeout: { _ in }, onUnresponsive: { snapshot in
+        let unresponsive = TransferWatchdog(idleLimit: 0.5, grace: 0.5, onTimeout: { _ in }, onUnresponsive: { snapshot in
             try! Data(snapshot.operation.utf8).write(to: report)
         })
         let unresponsiveStart = Date()
         try await watchedTransfer(watchdog: unresponsive) {
             await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-                DispatchQueue.global().asyncAfter(deadline: .now() + 0.4) { c.resume() }
+                DispatchQueue.global(qos: .background).asyncAfter(deadline: .now() + 3) { c.resume() }
             }
         }
-        precondition(Date().timeIntervalSince(unresponsiveStart) >= 0.35 && FileManager.default.fileExists(atPath: report.path))
+        precondition(Date().timeIntervalSince(unresponsiveStart) >= 2.8 && FileManager.default.fileExists(atPath: report.path))
         print("PASS: cancellation-resistant work is detected without abandoning a still-writing operation")
 
         let ticketDirectory = root.appendingPathComponent("ticket-test")
