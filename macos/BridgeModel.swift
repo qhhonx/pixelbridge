@@ -1035,7 +1035,7 @@ final class BridgeModel: ObservableObject {
             guard BurstPhotoMetadata.supports(ext) else { throw fail(Message(.error_format_unsupported, ext)) }
             diagnosticContext(item.id, burst.fields)
         }
-        let outputFile = jobDir.appendingPathComponent(outputName)
+        var outputFile = jobDir.appendingPathComponent(outputName)
         var prepared = outputFile
         var hash = prior?.sha256
         if let resumed = try await resumableBurstPhoto(source: source, delivery: outputFile,
@@ -1068,10 +1068,23 @@ final class BridgeModel: ObservableObject {
             diagnosticContext(item.id, ["operation": "primary_download", "network_access_allowed": "true",
                 "download_budget_bytes": String(budget), "primary_cached": String(FileManager.default.fileExists(atPath: source.path))])
             try await exportOriginal(primary, to: source, budget: budget)
-            let dated = datePlan.supplementMissingDates ? jobDir.appendingPathComponent("dated-original." + ext) : source
+            var still = source
+            var stillExtension = ext
+            if try live && prior?.sha256 == nil && ["jpg", "jpeg"].contains(ext) && isHEICFile(source) {
+                // Keep the cached PhotoKit export unchanged. A correctly named
+                // link lets date annotation and Motion assembly detect HEIC.
+                stillExtension = "heic"
+                still = jobDir.appendingPathComponent("motion-still.heic")
+                if FileManager.default.fileExists(atPath: still.path) { try FileManager.default.removeItem(at: still) }
+                try FileManager.default.linkItem(at: source, to: still)
+                outputFile = jobDir.appendingPathComponent("PB_" + stableID(item.id) + "_MP.heic")
+                prepared = outputFile
+                diagnosticContext(item.id, ["motion_format_correction": "heic_content_jpg_filename"])
+            }
+            let dated = datePlan.supplementMissingDates ? jobDir.appendingPathComponent("dated-original." + stillExtension) : still
             if !videoAsset && datePlan.supplementMissingDates {
                 diagnosticContext(item.id, ["operation": "capture_date_metadata"])
-                let changed = try await prepareDatedPhoto(source: source, delivery: dated, plan: datePlan,
+                let changed = try await prepareDatedPhoto(source: still, delivery: dated, plan: datePlan,
                     exiftool: exiftool, budget: await availableBudget())
                 diagnosticContext(item.id, ["capture_date_added": String(changed)])
             } else if videoAsset {

@@ -6,10 +6,12 @@ import CryptoKit
 
 @main struct BurstPhotoTests {
     @MainActor static func main() async throws {
+        setbuf(stdout, nil)
         let fm = FileManager.default
-        let root = fm.temporaryDirectory.appendingPathComponent("pixelbridge-burst-tests-" + UUID().uuidString)
+        let keep = ProcessInfo.processInfo.environment["PIXELBRIDGE_BURST_FIXTURES"]
+        let root = keep.map { URL(fileURLWithPath: $0) } ?? fm.temporaryDirectory.appendingPathComponent("pixelbridge-burst-tests-" + UUID().uuidString)
         try ensureDirectory(root)
-        defer { try? fm.removeItem(at: root) }
+        defer { if keep == nil { try? fm.removeItem(at: root) } }
         let exiftool = URL(fileURLWithPath: fm.currentDirectoryPath).appendingPathComponent(".build-cache/exiftool/exiftool")
         func hash(_ file: URL) async throws -> String {
             SHA256.hash(data: try Data(contentsOf: file)).map { String(format: "%02x", $0) }.joined()
@@ -67,6 +69,68 @@ import CryptoKit
             } catch let error as BridgeFailure { check(error.message.key == .error_burst_resume_changed) }
             check(try Data(contentsOf: delivery) == before)
             print("PASS: \(ext) metadata verified, source bytes and image pixels preserved, legacy/new retries deterministic, changed proof rejected")
+        }
+        // Real Photos exports can contain several standard XMP APP1 packets.
+        // ExifTool may report success without updating them; rewriting with -m
+        // drops region metadata. Keep both packets and the image data intact.
+        let duplicate = root.appendingPathComponent("duplicate-xmp.jpg")
+        let rawJPEG = try Data(contentsOf: root.appendingPathComponent("original.jpg"))
+        let disguisedHEIC = root.appendingPathComponent("misnamed.jpg")
+        try Data([0, 0, 0, 24] + Array("ftypheic".utf8) + [0, 0, 0, 0]).write(to: disguisedHEIC)
+        check(try isHEICFile(disguisedHEIC), "Missed HEIC content under JPEG filename")
+        check(try !isHEICFile(root.appendingPathComponent("original.jpg")), "JPEG detected as HEIC")
+        let packetText = """
+            <x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'><rdf:Description rdf:about='' xmlns:mwg-rs='http://www.metadataworkinggroup.com/schemas/regions/' xmlns:stDim='http://ns.adobe.com/xap/1.0/sType/Dimensions#'><mwg-rs:Regions><mwg-rs:AppliedToDimensions rdf:parseType='Resource'><stDim:unit>pixel</stDim:unit></mwg-rs:AppliedToDimensions></mwg-rs:Regions></rdf:Description></rdf:RDF></x:xmpmeta>
+            """
+        let packet = Data(packetText.utf8)
+        let xmpPrefix = Data("http://ns.adobe.com/xap/1.0/\0".utf8)
+        let segmentLength = packet.count + xmpPrefix.count + 2
+        check(segmentLength <= Int(UInt16.max))
+        var segment = Data([0xff, 0xe1, UInt8(segmentLength >> 8), UInt8(segmentLength & 0xff)])
+        segment.append(xmpPrefix)
+        segment.append(packet)
+        var duplicated = Data(rawJPEG.prefix(2))
+        duplicated.append(segment)
+        duplicated.append(segment)
+        duplicated.append(rawJPEG.dropFirst(2))
+        try duplicated.write(to: duplicate)
+        let captureTime = Date(timeIntervalSince1970: 1_786_761_701.123)
+        try fm.setAttributes([.modificationDate: captureTime], ofItemAtPath: duplicate.path)
+        let duplicateDelivery = root.appendingPathComponent("PB_duplicate-xmp.jpg")
+        let duplicateHash = try await prepareBurstPhoto(source: duplicate, delivery: duplicateDelivery,
+            metadata: metadata, exiftool: exiftool, budget: 10_000_000, hash: hash)
+        let prepared = try Data(contentsOf: duplicateDelivery)
+        check(try Data(contentsOf: duplicate) == duplicated, "Duplicate-XMP source changed")
+        let deliveredTime = try duplicateDelivery.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate!
+        check(abs(deliveredTime.timeIntervalSince(captureTime)) < 0.01, "Capture file time changed")
+        check(prepared.suffix(rawJPEG.count - 2) == rawJPEG.dropFirst(2), "Image bytes changed")
+        check(prepared.range(of: packet) == nil, "Burst fields were not added to each XMP packet")
+        check(try await hash(duplicateDelivery) == duplicateHash)
+        let originalImage = CGImageSourceCreateImageAtIndex(CGImageSourceCreateWithURL(duplicate as CFURL, nil)!, 0, nil)!
+        let deliveredImage = CGImageSourceCreateImageAtIndex(CGImageSourceCreateWithURL(duplicateDelivery as CFURL, nil)!, 0, nil)!
+        let originalPixels = originalImage.dataProvider!.data! as Data
+        let deliveredPixels = deliveredImage.dataProvider!.data! as Data
+        check(originalPixels == deliveredPixels, "Duplicate-XMP pixels changed")
+        let repeated = root.appendingPathComponent("PB_duplicate-xmp-retry.jpg")
+        check(try await prepareBurstPhoto(source: duplicate, delivery: repeated, metadata: metadata,
+            exiftool: exiftool, budget: 10_000_000, expectedHash: duplicateHash, hash: hash) == duplicateHash)
+        print("PASS: duplicate XMP packets preserve image pixels and retry bytes")
+        if let paths = ProcessInfo.processInfo.environment["PIXELBRIDGE_BURST_SAMPLES"] {
+            for (index, path) in paths.split(separator: ":").enumerated() {
+                let sample = URL(fileURLWithPath: String(path))
+                let delivery = root.appendingPathComponent("real-burst-\(index)." + sample.pathExtension)
+                let sourceBytes = try Data(contentsOf: sample)
+                let digest = try await prepareBurstPhoto(source: sample, delivery: delivery,
+                    metadata: metadata, exiftool: exiftool, budget: 20_000_000, hash: hash)
+                check(try Data(contentsOf: sample) == sourceBytes, "Real burst source changed")
+                check(try await hash(delivery) == digest, "Real burst hash mismatch")
+                let a = CGImageSourceCreateImageAtIndex(CGImageSourceCreateWithURL(sample as CFURL, nil)!, 0, nil)!
+                let b = CGImageSourceCreateImageAtIndex(CGImageSourceCreateWithURL(delivery as CFURL, nil)!, 0, nil)!
+                let originalPixels = a.dataProvider!.data! as Data
+                let deliveryPixels = b.dataProvider!.data! as Data
+                check(originalPixels == deliveryPixels, "Real burst pixels changed")
+                print("PASS: real burst profile \(index) source and pixels preserved")
+            }
         }
         let source = root.appendingPathComponent("original.jpg"), delivery = root.appendingPathComponent("failure.jpg")
         let fake = root.appendingPathComponent("fake-exiftool")

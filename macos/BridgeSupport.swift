@@ -245,6 +245,17 @@ func exportOriginal(_ resource: PHAssetResource, to destination: URL, budget: In
     } catch { try? FileManager.default.removeItem(at: partial); throw error }
 }
 
+// PhotoKit can export HEIC bytes under an original filename ending in .jpg.
+// Motion assembly selects its container from the file extension, so inspect
+// the actual ISO BMFF brand before naming the still copy and output.
+func isHEICFile(_ file: URL) throws -> Bool {
+    let handle = try FileHandle(forReadingFrom: file)
+    defer { try? handle.close() }
+    let header = try handle.read(upToCount: 12) ?? Data()
+    guard header.count == 12, header[4...7].elementsEqual(Data("ftyp".utf8)) else { return false }
+    return ["heic", "heix", "hevc", "hevx", "heim", "heis"].contains(String(decoding: header[8...11], as: UTF8.self))
+}
+
 // Retry/interrupted work has priority over new photos, independently of library
 // order. Delivered identities remain excluded even when manually requested.
 func transferCandidates(library: [LibraryItem], rows: [QueueRow], retries: [String: RetryInfo], requested: Set<String>, limit: Int, now: Date) -> [LibraryItem] {
