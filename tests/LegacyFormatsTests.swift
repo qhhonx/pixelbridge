@@ -49,6 +49,31 @@ import CryptoKit
         try Data("GIF89a".utf8).write(to: fake)
         check(try isGIFFile(fake), "Missed GIF content under JPEG filename")
         check(try !isGIFFile(source), "Detected JP2 as GIF")
+        let jpeg = root.appendingPathComponent("misnamed.heic")
+        try Data([0xff, 0xd8, 0xff, 0xe0]).write(to: jpeg)
+        check(try isJPEGFile(jpeg), "Missed JPEG content under HEIC filename")
+        check(try !isJPEGFile(source), "Detected JP2 as JPEG")
+        let same = compareFirstFrameImages(image, image)
+        check(same.matched && same.normalizedDifference == 0 && same.correlation > 0.999, "Identical first frame did not match")
+        var inversePixels = pixels
+        for index in stride(from: 0, to: inversePixels.count, by: 4) {
+            inversePixels[index] = 255 - inversePixels[index]
+            inversePixels[index + 1] = 255 - inversePixels[index + 1]
+            inversePixels[index + 2] = 255 - inversePixels[index + 2]
+        }
+        let inverse = CGImage(width: 64, height: 64, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: 256,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+            provider: CGDataProvider(data: Data(inversePixels) as CFData)!, decode: nil, shouldInterpolate: false, intent: .defaultIntent)!
+        check(!compareFirstFrameImages(image, inverse).matched, "Different first frame was accepted")
+        if let sample = ProcessInfo.processInfo.environment["PIXELBRIDGE_JP2_SAMPLE"] {
+            let realSource = URL(fileURLWithPath: sample)
+            let realDelivery = root.appendingPathComponent("real-converted.png")
+            let realBefore = SHA256.hash(data: try Data(contentsOf: realSource))
+            try prepareJP2PNG(source: realSource, delivery: realDelivery, budget: 3_000_000_000)
+            check(SHA256.hash(data: try Data(contentsOf: realSource)) == realBefore, "Real JP2 original changed")
+            check(try Data(contentsOf: realDelivery).starts(with: [137, 80, 78, 71]), "Real JP2 output is not PNG")
+            print("PASS: real large JP2 conversion and full rendered-pixel verification")
+        }
         if let sample = ProcessInfo.processInfo.environment["PIXELBRIDGE_GIF_SAMPLE"] {
             let originalGIF = URL(fileURLWithPath: sample)
             let copy = root.appendingPathComponent("live-sample.gif")
@@ -67,6 +92,12 @@ import CryptoKit
                 check(a.dataProvider!.data! as Data == b.dataProvider!.data! as Data, "GIF frame pixels changed")
             }
             print("PASS: real GIF frame count, pixels and original bytes preserved")
+        }
+        if let still = ProcessInfo.processInfo.environment["PIXELBRIDGE_MISSING_MARKER_STILL"],
+           let video = ProcessInfo.processInfo.environment["PIXELBRIDGE_MISSING_MARKER_VIDEO"] {
+            let match = try await firstVideoFrameMatch(still: URL(fileURLWithPath: still), video: URL(fileURLWithPath: video))
+            check(match.matched, "Real missing-marker first frame did not match")
+            print("PASS: real missing-marker pair verified from first-frame pixels")
         }
     }
 }

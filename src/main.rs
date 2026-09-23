@@ -53,6 +53,9 @@ enum Commands {
         exiftool: PathBuf,
         #[arg(long, default_value = "/usr/bin/avconvert")]
         avconvert: PathBuf,
+        /// Verified presentation timestamp when an imported pair lacks Apple's marker.
+        #[arg(long)]
+        presentation_timestamp_us: Option<i64>,
         /// Rebuild an existing output file.
         #[arg(long)]
         force: bool,
@@ -151,8 +154,17 @@ fn main() -> Result<()> {
             output,
             exiftool,
             avconvert,
+            presentation_timestamp_us,
             force,
-        } => prepare(&image, &video, &output, &exiftool, &avconvert, force),
+        } => prepare(
+            &image,
+            &video,
+            &output,
+            &exiftool,
+            &avconvert,
+            presentation_timestamp_us,
+            force,
+        ),
         Commands::Push {
             file,
             device,
@@ -212,6 +224,7 @@ fn prepare(
     output: &Path,
     exiftool: &Path,
     avconvert: &Path,
+    presentation_timestamp_us: Option<i64>,
     force: bool,
 ) -> Result<()> {
     ensure_file(image, "image")?;
@@ -277,7 +290,14 @@ fn prepare(
             bail!("converted motion track is not H.264 (codec={converted_codec})");
         }
         validate_live_pair(&image_meta, &converted_meta)?;
-        let timestamp_us = live_photo_timestamp_us(&converted_meta)?;
+        let timestamp_us = if let Some(timestamp) = presentation_timestamp_us {
+            if timestamp < 0 {
+                bail!("presentation timestamp override must not be negative");
+            }
+            timestamp
+        } else {
+            live_photo_timestamp_us(&converted_meta)?
+        };
         let video_bytes = fs::read(&prepared_video).context("read prepared motion track")?;
 
         let source_xmp = command_stdout_bytes(

@@ -1103,6 +1103,18 @@ final class BridgeModel: ObservableObject {
                 prepared = outputFile
                 diagnosticContext(item.id, ["motion_format_correction": "heic_content_jpg_filename"])
             }
+            if try live && prior?.sha256 == nil && ["heic", "heif"].contains(ext) && isJPEGFile(source) {
+                // Some imported Live Photos keep an HEIC filename even though
+                // PhotoKit exports a JPEG still. Match the working copy and
+                // Motion Photo container to the bytes before writing XMP.
+                stillExtension = "jpg"
+                still = jobDir.appendingPathComponent("motion-still.jpg")
+                if FileManager.default.fileExists(atPath: still.path) { try FileManager.default.removeItem(at: still) }
+                try FileManager.default.linkItem(at: source, to: still)
+                outputFile = jobDir.appendingPathComponent("PB_" + stableID(item.id) + "_MP.jpg")
+                prepared = outputFile
+                diagnosticContext(item.id, ["motion_format_correction": "jpeg_content_heic_filename"])
+            }
             let dated = datePlan.supplementMissingDates ? jobDir.appendingPathComponent("dated-original." + stillExtension) : still
             if !videoAsset && datePlan.supplementMissingDates {
                 diagnosticContext(item.id, ["operation": "capture_date_metadata"])
@@ -1130,7 +1142,15 @@ final class BridgeModel: ObservableObject {
                 try await guardDevice(extraBytes: imageSize + videoSize * 8, cacheExtraBytes: imageSize + videoSize * 8)
                 diagnosticContext(item.id, ["operation": "motion_conversion"])
                 updateStage(item.id, .preparing)
-                let text = try await invoke(["prepare", "--image", dated.path, "--video", movie.path, "--output", prepared.path, "--exiftool", exiftool.path, "--force"])
+                var prepareArguments = ["prepare", "--image", dated.path, "--video", movie.path,
+                    "--output", prepared.path, "--exiftool", exiftool.path, "--force"]
+                if (try? await motionHasStillImageTime(movie, exiftool: exiftool)) == false {
+                    let match = try await firstVideoFrameMatch(still: dated, video: movie)
+                    diagnosticContext(item.id, ["first_frame_difference": String(match.normalizedDifference),
+                        "first_frame_correlation": String(match.correlation), "first_frame_match": String(match.matched)])
+                    if match.matched { prepareArguments += ["--presentation-timestamp-us", "0"] }
+                }
+                let text = try await invoke(prepareArguments)
                 hash = value("sha256", text)
             } else if let burst {
                 diagnosticContext(item.id, ["operation": "burst_metadata"])

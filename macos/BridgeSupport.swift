@@ -3,6 +3,7 @@ import Photos
 import Foundation
 import CryptoKit
 import ImageIO
+import AVFoundation
 
 struct QueueRow: Decodable, Identifiable {
     let asset_id: String
@@ -264,6 +265,139 @@ func isGIFFile(_ file: URL) throws -> Bool {
     return header == Data("GIF87a".utf8) || header == Data("GIF89a".utf8)
 }
 
+func isJPEGFile(_ file: URL) throws -> Bool {
+    let handle = try FileHandle(forReadingFrom: file)
+    defer { try? handle.close() }
+    let header = try handle.read(upToCount: 3) ?? Data()
+    return header.count == 3 && header[0] == 0xff && header[1] == 0xd8 && header[2] == 0xff
+}
+
+private struct RasterVerification {
+    let width: Int
+    let height: Int
+    let bitsPerComponent: Int
+    let colorModel: CGColorSpaceModel
+    let orientation: Int?
+    let digest: Data
+}
+
+struct FirstFrameMatch {
+    let matched: Bool
+    let normalizedDifference: Double
+    let correlation: Double
+}
+
+private func comparisonPixels(_ image: CGImage, size: Int = 128) -> [UInt8]? {
+    guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
+    var pixels = [UInt8](repeating: 0, count: size * size * 4)
+    let drew = pixels.withUnsafeMutableBytes { raw -> Bool in
+        guard let context = CGContext(data: raw.baseAddress, width: size, height: size,
+            bitsPerComponent: 8, bytesPerRow: size * 4, space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: size, height: size))
+        return true
+    }
+    return drew ? pixels : nil
+}
+
+func compareFirstFrameImages(_ still: CGImage, _ frame: CGImage) -> FirstFrameMatch {
+    let stillAspect = Double(still.width) / Double(still.height)
+    let frameAspect = Double(frame.width) / Double(frame.height)
+    guard abs(log(stillAspect / frameAspect)) <= 0.02,
+          let a = comparisonPixels(still), let b = comparisonPixels(frame) else {
+        return FirstFrameMatch(matched: false, normalizedDifference: 1, correlation: 0)
+    }
+    var difference = 0.0
+    var aLuma = [Double](); var bLuma = [Double]()
+    aLuma.reserveCapacity(a.count / 4); bLuma.reserveCapacity(b.count / 4)
+    for index in stride(from: 0, to: a.count, by: 4) {
+        difference += Double(abs(Int(a[index]) - Int(b[index]))
+            + abs(Int(a[index + 1]) - Int(b[index + 1]))
+            + abs(Int(a[index + 2]) - Int(b[index + 2])))
+        aLuma.append(0.2126 * Double(a[index]) + 0.7152 * Double(a[index + 1]) + 0.0722 * Double(a[index + 2]))
+        bLuma.append(0.2126 * Double(b[index]) + 0.7152 * Double(b[index + 1]) + 0.0722 * Double(b[index + 2]))
+    }
+    let count = Double(aLuma.count)
+    let normalized = difference / (count * 3 * 255)
+    let aMean = aLuma.reduce(0, +) / count; let bMean = bLuma.reduce(0, +) / count
+    var covariance = 0.0, aVariance = 0.0, bVariance = 0.0
+    for index in aLuma.indices {
+        let x = aLuma[index] - aMean; let y = bLuma[index] - bMean
+        covariance += x * y; aVariance += x * x; bVariance += y * y
+    }
+    let denominator = sqrt(aVariance * bVariance)
+    let correlation = denominator > 0 ? covariance / denominator : (normalized <= 0.01 ? 1 : 0)
+    return FirstFrameMatch(matched: normalized <= 0.05 && correlation >= 0.995,
+        normalizedDifference: normalized, correlation: correlation)
+}
+
+func firstVideoFrameMatch(still: URL, video: URL) async throws -> FirstFrameMatch {
+    guard let source = CGImageSourceCreateWithURL(still as CFURL, nil),
+          let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 512
+          ] as CFDictionary) else { throw fail(Message(.error_motion_missing)) }
+    let generator = AVAssetImageGenerator(asset: AVURLAsset(url: video))
+    generator.appliesPreferredTrackTransform = true
+    generator.maximumSize = CGSize(width: 512, height: 512)
+    let (frame, actualTime) = try await generator.image(at: .zero)
+    guard abs(actualTime.seconds) <= 0.1 else {
+        return FirstFrameMatch(matched: false, normalizedDifference: 1, correlation: 0)
+    }
+    return compareFirstFrameImages(image, frame)
+}
+
+func motionHasStillImageTime(_ video: URL, exiftool: URL) async throws -> Bool {
+    let output = try await processOutput(exiftool, ["-json", "-G1", "-a", "-s", "-n", "-ee", "-StillImageTime", "--", video.path])
+    guard let object = (try JSONSerialization.jsonObject(with: Data(output.utf8)) as? [[String: Any]])?.first else { return false }
+    return object.keys.contains { $0.hasSuffix(":StillImageTime") || $0 == "StillImageTime" }
+}
+
+// Hash the complete rendered image in narrow strips. ImageIO may canonicalize
+// an embedded ICC profile while writing PNG, so comparing profile bytes rejects
+// visually identical output. Rendering both files into sRGB verifies the actual
+// color-managed pixels without allocating two full-size RGBA buffers.
+private func verifiedRaster(_ file: URL, type: String, budget: Int64) throws -> RasterVerification {
+    try autoreleasepool {
+        guard let source = CGImageSourceCreateWithURL(file as CFURL, nil),
+              CGImageSourceGetType(source) as String? == type,
+              CGImageSourceGetCount(source) == 1,
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+              image.bitsPerComponent == 8,
+              image.width > 0, image.height > 0,
+              let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else {
+            throw fail(Message(.error_format_unsupported, file.pathExtension.lowercased()))
+        }
+        let (pixels, overflow) = Int64(image.width).multipliedReportingOverflow(by: Int64(image.height))
+        guard !overflow, pixels > 0, pixels <= budget / 5 else { throw fail(Message(.error_date_cache_budget)) }
+        let bytesPerRow = image.width * 4
+        var hasher = SHA256()
+        let stripRows = 128
+        for start in stride(from: 0, to: image.height, by: stripRows) {
+            try Task.checkCancellation()
+            let rows = min(stripRows, image.height - start)
+            var rendered = Data(count: bytesPerRow * rows)
+            let drew = rendered.withUnsafeMutableBytes { raw -> Bool in
+                guard let context = CGContext(data: raw.baseAddress, width: image.width, height: rows,
+                    bitsPerComponent: 8, bytesPerRow: bytesPerRow, space: colorSpace,
+                    bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+                context.translateBy(x: 0, y: -CGFloat(start))
+                context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+                return true
+            }
+            guard drew else { throw fail(Message(.error_format_unsupported, file.pathExtension.lowercased())) }
+            hasher.update(data: rendered)
+        }
+        let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any]
+        return RasterVerification(width: image.width, height: image.height,
+            bitsPerComponent: image.bitsPerComponent, colorModel: image.colorSpace?.model ?? .unknown,
+            orientation: properties?[kCGImagePropertyOrientation as String] as? Int,
+            digest: Data(hasher.finalize()))
+    }
+}
+
 // Google Photos does not list JP2 as a supported upload type. Decode one
 // 8-bit JPEG 2000 image into an independent PNG copy and verify its rendered
 // pixels before using it as a delivery. Keep the PhotoKit export unchanged.
@@ -271,32 +405,22 @@ func prepareJP2PNG(source: URL, delivery: URL, budget: Int64) throws {
     let fm = FileManager.default
     guard source.standardizedFileURL != delivery.standardizedFileURL,
           source.pathExtension.lowercased() == "jp2" else { throw fail(Message(.error_format_unsupported, "jp2")) }
-    guard let imageSource = CGImageSourceCreateWithURL(source as CFURL, nil),
-          CGImageSourceGetType(imageSource) as String? == "public.jpeg-2000",
-          CGImageSourceGetCount(imageSource) == 1,
-          let image = CGImageSourceCreateImageAtIndex(imageSource, 0, nil),
-          image.bitsPerComponent == 8,
-          image.width > 0, image.height > 0 else { throw fail(Message(.error_format_unsupported, "jp2")) }
-    let (pixels, overflow) = Int64(image.width).multipliedReportingOverflow(by: Int64(image.height))
-    guard !overflow, pixels > 0, pixels <= budget / 8 else { throw fail(Message(.error_date_cache_budget)) }
+    let before = try verifiedRaster(source, type: "public.jpeg-2000", budget: budget)
     let temporary = delivery.deletingLastPathComponent().appendingPathComponent(".jp2-" + UUID().uuidString + ".png")
     defer { try? fm.removeItem(at: temporary) }
-    guard let destination = CGImageDestinationCreateWithURL(temporary as CFURL, "public.png" as CFString, 1, nil) else {
-        throw fail(Message(.error_format_unsupported, "jp2"))
+    let converted = autoreleasepool { () -> Bool in
+        guard let imageSource = CGImageSourceCreateWithURL(source as CFURL, nil),
+              let destination = CGImageDestinationCreateWithURL(temporary as CFURL, "public.png" as CFString, 1, nil) else { return false }
+        CGImageDestinationAddImageFromSource(destination, imageSource, 0, nil)
+        return CGImageDestinationFinalize(destination)
     }
-    CGImageDestinationAddImageFromSource(destination, imageSource, 0, nil)
-    guard CGImageDestinationFinalize(destination),
-          let pngSource = CGImageSourceCreateWithURL(temporary as CFURL, nil),
-          CGImageSourceGetType(pngSource) as String? == "public.png",
-          CGImageSourceGetCount(pngSource) == 1,
-          let png = CGImageSourceCreateImageAtIndex(pngSource, 0, nil),
-          png.width == image.width, png.height == image.height,
-          png.bitsPerComponent == image.bitsPerComponent,
-          image.colorSpace?.copyICCData() == png.colorSpace?.copyICCData(),
-          (CGImageSourceCopyPropertiesAtIndex(imageSource, 0, nil) as? [String: Any])?[kCGImagePropertyOrientation as String] as? Int ==
-              (CGImageSourceCopyPropertiesAtIndex(pngSource, 0, nil) as? [String: Any])?[kCGImagePropertyOrientation as String] as? Int,
-          let before = renderedPixels(image), let after = renderedPixels(png),
-          before == after else {
+    guard converted else { throw fail(Message(.error_format_unsupported, "jp2")) }
+    let after = try verifiedRaster(temporary, type: "public.png", budget: budget)
+    guard after.width == before.width, after.height == before.height,
+          after.bitsPerComponent == before.bitsPerComponent,
+          after.colorModel == before.colorModel,
+          after.orientation == before.orientation,
+          after.digest == before.digest else {
         throw fail(Message(.error_format_unsupported, "jp2"))
     }
     let bytes = Int64((try temporary.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0)
@@ -304,20 +428,6 @@ func prepareJP2PNG(source: URL, delivery: URL, budget: Int64) throws {
     try Task.checkCancellation()
     if fm.fileExists(atPath: delivery.path) { try fm.removeItem(at: delivery) }
     try fm.moveItem(at: temporary, to: delivery)
-}
-
-private func renderedPixels(_ image: CGImage) -> Data? {
-    guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else { return nil }
-    let bytesPerRow = image.width * 4
-    var pixels = Data(count: bytesPerRow * image.height)
-    let drew = pixels.withUnsafeMutableBytes { raw -> Bool in
-        guard let context = CGContext(data: raw.baseAddress, width: image.width, height: image.height,
-            bitsPerComponent: 8, bytesPerRow: bytesPerRow, space: colorSpace,
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
-        context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
-        return true
-    }
-    return drew ? pixels : nil
 }
 
 // Retry/interrupted work has priority over new photos, independently of library
