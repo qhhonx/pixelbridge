@@ -53,6 +53,9 @@ enum Commands {
         exiftool: PathBuf,
         #[arg(long, default_value = "/usr/bin/avconvert")]
         avconvert: PathBuf,
+        /// Optional FFmpeg binary for recovering an HEVC pair when Apple's decoder fails.
+        #[arg(long)]
+        ffmpeg: Option<PathBuf>,
         /// Verified presentation timestamp when an imported pair lacks Apple's marker.
         #[arg(long)]
         presentation_timestamp_us: Option<i64>,
@@ -154,6 +157,7 @@ fn main() -> Result<()> {
             output,
             exiftool,
             avconvert,
+            ffmpeg,
             presentation_timestamp_us,
             force,
         } => prepare(
@@ -162,6 +166,7 @@ fn main() -> Result<()> {
             &output,
             &exiftool,
             &avconvert,
+            ffmpeg.as_deref(),
             presentation_timestamp_us,
             force,
         ),
@@ -224,6 +229,7 @@ fn prepare(
     output: &Path,
     exiftool: &Path,
     avconvert: &Path,
+    ffmpeg: Option<&Path>,
     presentation_timestamp_us: Option<i64>,
     force: bool,
 ) -> Result<()> {
@@ -265,12 +271,13 @@ fn prepare(
 
     let result = (|| -> Result<()> {
         let prepared_video = temp_dir.join("motion-h264.mov");
+        let mut recovered_timestamp = None;
         if matches!(codec, "avc1" | "avc3") {
             fs::copy(video, &prepared_video).context("copy existing H.264 motion track")?;
             println!("video: H.264 already; preserving without transcoding");
         } else {
             println!("video: {codec}; transcoding motion track to H.264");
-            run_checked(
+            let conversion = run_checked(
                 Command::new(avconvert)
                     .arg("--source")
                     .arg(video)
@@ -281,7 +288,27 @@ fn prepare(
                     .arg("--replace")
                     .arg("--disableMetadataFilter"),
                 "avconvert",
-            )?;
+            );
+            if let Err(error) = conversion {
+                if !matches!(codec, "hvc1" | "hev1") {
+                    return Err(error);
+                }
+                let recovery_tool = ffmpeg.map(Path::to_path_buf).or_else(find_ffmpeg);
+                let Some(recovery_tool) = recovery_tool else {
+                    return Err(error);
+                };
+                let source_timestamp = presentation_timestamp_us
+                    .map(Ok)
+                    .unwrap_or_else(|| live_photo_timestamp_us(&video_meta))?;
+                recover_hevc_video(video, &prepared_video, &recovery_tool)?;
+                println!(
+                    "video: Apple conversion failed; recovered decodable HEVC frames with FFmpeg"
+                );
+                println!("video recovery reason: {error}");
+                // FFmpeg preserves the content identifier but not Apple's timed
+                // still-image track. Keep its timestamp from the source pair.
+                recovered_timestamp = Some(source_timestamp);
+            }
         }
 
         let converted_meta = exif_json(exiftool, &prepared_video, true)?;
@@ -290,14 +317,15 @@ fn prepare(
             bail!("converted motion track is not H.264 (codec={converted_codec})");
         }
         validate_live_pair(&image_meta, &converted_meta)?;
-        let timestamp_us = if let Some(timestamp) = presentation_timestamp_us {
-            if timestamp < 0 {
-                bail!("presentation timestamp override must not be negative");
-            }
-            timestamp
-        } else {
-            live_photo_timestamp_us(&converted_meta)?
-        };
+        let timestamp_us =
+            if let Some(timestamp) = recovered_timestamp.or(presentation_timestamp_us) {
+                if timestamp < 0 {
+                    bail!("presentation timestamp override must not be negative");
+                }
+                timestamp
+            } else {
+                live_photo_timestamp_us(&converted_meta)?
+            };
         let video_bytes = fs::read(&prepared_video).context("read prepared motion track")?;
 
         let source_xmp = command_stdout_bytes(
@@ -361,6 +389,103 @@ fn prepare(
 
     let _ = fs::remove_dir_all(&temp_dir);
     result
+}
+
+fn find_ffmpeg() -> Option<PathBuf> {
+    ["/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"]
+        .into_iter()
+        .map(PathBuf::from)
+        .find(|path| path.is_file())
+}
+
+fn video_frame_count(ffprobe: &Path, video: &Path, decoded: bool) -> Result<u64> {
+    let mut command = Command::new(ffprobe);
+    command.args(["-v", "error", "-select_streams", "v:0"]);
+    if decoded {
+        command.arg("-count_frames");
+    }
+    let key = if decoded {
+        "nb_read_frames"
+    } else {
+        "nb_frames"
+    };
+    let output = command
+        .args(["-show_entries", &format!("stream={key}"), "-of", "json"])
+        .arg(video);
+    let data = command_stdout_bytes(output, "count motion video frames")?;
+    let metadata: Value = serde_json::from_slice(&data).context("parse FFprobe frame count")?;
+    metadata["streams"][0][key]
+        .as_str()
+        .context("motion video frame count is unavailable")?
+        .parse()
+        .context("motion video frame count is invalid")
+}
+
+fn recover_hevc_video(source: &Path, output: &Path, ffmpeg: &Path) -> Result<()> {
+    let ffprobe = ffmpeg.with_file_name("ffprobe");
+    ensure_file(ffmpeg, "FFmpeg")?;
+    ensure_file(&ffprobe, "FFprobe")?;
+    let expected_frames = video_frame_count(&ffprobe, source, false)?;
+    if expected_frames < 30 {
+        bail!("HEVC recovery needs at least 30 source frames");
+    }
+    run_checked(
+        Command::new(ffmpeg)
+            .args([
+                "-hide_banner",
+                "-y",
+                "-err_detect",
+                "ignore_err",
+                "-fflags",
+                "+discardcorrupt",
+                "-i",
+            ])
+            .arg(source)
+            .args([
+                "-map",
+                "0:v:0",
+                "-map",
+                "0:a?",
+                "-map_metadata",
+                "0",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "slow",
+                "-crf",
+                "17",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "192k",
+                "-movflags",
+                "+faststart+use_metadata_tags",
+            ])
+            .arg(output),
+        "recover HEVC motion video",
+    )?;
+    let recovered_frames = video_frame_count(&ffprobe, output, true)?;
+    if !enough_recovered_frames(expected_frames, recovered_frames) {
+        bail!("HEVC recovery retained too few frames: {recovered_frames}/{expected_frames}");
+    }
+    run_checked(
+        Command::new(ffmpeg)
+            .args(["-v", "error", "-i"])
+            .arg(output)
+            .args(["-f", "null", "-"]),
+        "verify recovered motion video",
+    )?;
+    println!("video recovery: {recovered_frames}/{expected_frames} frames retained");
+    Ok(())
+}
+
+fn enough_recovered_frames(expected: u64, recovered: u64) -> bool {
+    expected >= 30
+        && recovered >= 30
+        && recovered <= expected
+        && recovered.saturating_mul(100) >= expected.saturating_mul(80)
 }
 
 fn ensure_file(path: &Path, label: &str) -> Result<()> {
@@ -845,18 +970,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hevc_recovery_rejects_short_or_mostly_undecodable_video() {
+        assert!(enough_recovered_frames(100, 80));
+        assert!(enough_recovered_frames(63, 58));
+        assert!(!enough_recovered_frames(96, 76));
+        assert!(!enough_recovered_frames(30, 29));
+        assert!(!enough_recovered_frames(60, 61));
+    }
+
+    #[test]
     fn still_time_accepts_exiftool_short_duration_strings() {
         let numeric = serde_json::json!({"Track5:StillImageTime": -1, "Track5:TrackDuration": 0.00166666666666667});
         let text = serde_json::json!({"Track5:StillImageTime": -1, "Track5:TrackDuration": "0.00166666666666667"});
         assert_eq!(live_photo_timestamp_us(&numeric).unwrap(), 1667);
         assert_eq!(live_photo_timestamp_us(&text).unwrap(), 1667);
-        let invalid = serde_json::json!({"Track5:StillImageTime": -1, "Track5:TrackDuration": "NaN"});
+        let invalid =
+            serde_json::json!({"Track5:StillImageTime": -1, "Track5:TrackDuration": "NaN"});
         assert!(live_photo_timestamp_us(&invalid).is_err());
     }
 
     #[test]
     fn still_time_zero_is_first_frame_even_when_track_spans_movie() {
-        let metadata = serde_json::json!({"Track3:StillImageTime": 0, "Track3:TrackDuration": 2.91});
+        let metadata =
+            serde_json::json!({"Track3:StillImageTime": 0, "Track3:TrackDuration": 2.91});
         assert_eq!(live_photo_timestamp_us(&metadata).unwrap(), 0);
     }
 

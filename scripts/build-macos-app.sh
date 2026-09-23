@@ -6,7 +6,9 @@ cd "$project_dir"
 ./scripts/fetch-dependencies.sh
 python3 scripts/check-version.py
 export MACOSX_DEPLOYMENT_TARGET=14.0
-export CARGO_ENCODED_RUSTFLAGS=$(printf '%s\037%s\037%s' "--remap-path-prefix=$project_dir=/pixelbridge" "--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo" "--remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup")
+if [ "${PIXELBRIDGE_SKIP_RUST_PATH_REMAP:-0}" != 1 ]; then
+  export CARGO_ENCODED_RUSTFLAGS=$(printf '%s\037%s\037%s' "--remap-path-prefix=$project_dir=/pixelbridge" "--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo" "--remap-path-prefix=${RUSTUP_HOME:-$HOME/.rustup}=/rustup")
+fi
 cargo build --release --locked
 app_dir="$project_dir/dist/PixelBridge.app"
 contents="$app_dir/Contents"
@@ -15,6 +17,9 @@ mkdir -p "$contents/MacOS" "$contents/Resources" "$contents/Frameworks" .build-c
 cp target/release/pixelbridge "$contents/MacOS/pixelbridge-core"
 # Remove linker debug records that can retain local toolchain paths.
 xcrun strip -S "$contents/MacOS/pixelbridge-core"
+if [ "${PIXELBRIDGE_SKIP_RUST_PATH_REMAP:-0}" = 1 ]; then
+  python3 scripts/sanitize-rust-binary.py "$contents/MacOS/pixelbridge-core"
+fi
 ditto .build-cache/exiftool "$contents/Resources/exiftool"
 ditto .build-cache/sparkle/Sparkle.framework "$contents/Frameworks/Sparkle.framework"
 xcrun swiftc -O -whole-module-optimization -parse-as-library \

@@ -14,6 +14,7 @@ The app uses an ad hoc integrity signature and is **not notarized by Apple**.
 - Reads your System Photo Library with PhotoKit, including originals stored in iCloud when Optimize Mac Storage is enabled.
 - Shows a paginated native photo grid, with photo-type and transfer-status icons.
 - Packages supported Live Photos as motion photos, retaining the still image and paired video together.
+- If Apple's HEVC converter rejects a damaged paired video, an installed FFmpeg can recover decodable frames before packaging; the original pair remains unchanged.
 - Adds Google burst grouping metadata and the Apple representative-frame flag to separate JPEG/HEIC transfer copies. JPEG grouping has been verified on Pixel and Google Photos web; HEIC cloud grouping remains unverified.
 - Transfers files through USB/ADB with hashes, resumable progress, retry backoff and temperature/storage guards.
 - Stores progress in a local SQLite queue and can reclaim verified Mac staging files.
